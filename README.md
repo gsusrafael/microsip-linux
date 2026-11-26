@@ -4,11 +4,13 @@ Port de [MicroSIP](https://www.microsip.org/) (softphone SIP basado en PJSIP) a
 Linux, escrito en **Rust + GTK4**, con soporte de **bandeja del sistema** y
 empaquetado como **.deb** para Debian/Ubuntu.
 
-> **Estado:** v0.1.0 — esqueleto funcional. La UI (cuentas, marcador, llamadas,
-> bandeja) está completa con un backend SIP **mock** para desarrollo. La
-> integración real con **PJSIP vía FFI** está vinculada y compila
-> (`--features pjsip`) pero la inicialización de pjsua requiere ajustes de
-> layout de los structs C (ver "PJSIP FFI" abajo).
+> **Estado:** v0.1.0 — PJSIP FFI **funcional**. Los structs C se generan con
+> **bindgen** desde `~/.local/include/pjsua-lib/pjsua.h` (layout exacto de
+> pjproject 2.15). `pjsua_init` se ejecuta correctamente: PJSUA pasa a estado
+> `CREATED` y registra todos los módulos SIP (mod-ua, mod-invite, etc.).
+> La UI (cuentas, marcador, llamadas, bandeja) funciona con el backend
+> seleccionable: **mock** (por defecto, sin dependencias) o **PJSIP real**
+> (`--features pjsip`).
 
 ---
 
@@ -81,13 +83,10 @@ cargo build --release --features pjsip
 ./target/release/microsip-linux
 ```
 
-> **Nota:** el backend PJSIP FFI compila y se vincula, pero `pjsua_init` falla
-> al inicializar el resolvedor DNS porque los structs C (`pjsua_config`,
-> `pjsua_acc_config`, etc.) se definen con padding aproximado en
-> `src/sip/pjsip.rs` y no coinciden byte-a-byte con pjproject 2.15. Para
-> producción se recomienda regenerar los bindings con **bindgen** a partir de
-> los headers de pjproject en `~/.local/include/`. El mock sigue siendo el
-> backend funcional por defecto.
+> **PJSIP FFI funciona:** los structs C vienen de `bindgen` (layout exacto de
+> pjproject 2.15) y las funciones externas se declaran a mano. `pjsua_init`
+> ejecuta correctamente: PJSUA pasa a `CREATED` y registra todos los módulos
+> SIP. El mock sigue siendo el backend por defecto (sin feature `pjsip`).
 
 ---
 
@@ -143,6 +142,7 @@ Luego compilar MicroSIP con `--features pjsip`.
 | Bandeja del sistema | `cargo run --release` → cerrar ventana | Icono en bandeja; clic para mostrar |
 | Compilar .deb | `cargo deb` | `target/debian/*.deb` |
 | PJSIP vinculado | `cargo build --features pjsip` | Compila sin errores de enlace |
+| PJSIP inicializa | `cargo build --features pjsip && ./target/debug/microsip-linux` | Log: `PJSUA state changed: NULL --> CREATED`, módulos SIP registrados |
 
 Para probar sin servidor gráfico (entorno headless/CI):
 
@@ -154,11 +154,11 @@ xvfb-run -a cargo run --release   # necesita Xvfb
 
 ## Roadmap (v1 → v1.1)
 
-1. Regenerar bindings FFI de pjproject con **bindgen** para que `pjsua_init`
-   no falle en el resolvedor DNS.
-2. Conectar comandos SIP (Dial/Answer/Hangup) desde la UI al backend real.
-3. Audio: integrar `pjmedia` con ALSA/PulseAudio para voz real.
-4. Cuentas persistentes (archivo de config) en vez de cuenta mock hardcodeada.
+1. Conectar comandos SIP (Dial/Answer/Hangup) desde la UI al backend real.
+2. Audio: integrar `pjmedia` con ALSA/PulseAudio para voz real.
+3. Cuentas persistentes (archivo de config) en vez de cuenta mock hardcodeada.
+4. Mejorar la gestión de memoria de `pj_str_t` (pool de pjsua en vez de
+   `CString::forget`).
 
 ---
 
