@@ -2,8 +2,15 @@
 //!
 //! La implementación real de MicroSIP usa PJSIP (C). Aquí definimos un
 //! `SipBackend` trait para poder desarrollar la UI en Rust sin depender de
-//! librerías C, y dejamos un backend `mock` listo para usar mientras se
-//! integra PJSIP vía FFI (ver `src/sip/pjsip.rs`, aún por implementar).
+//! librerías C, y dejamos un backend `mock` listo para desarrollar sin red.
+//! Cuando la feature `pjsip` está activa, se compila además el backend real
+//! vía FFI contra pjproject (ver `src/sip/pjsip.rs`).
+
+#[cfg(feature = "pjsip")]
+mod pjsip;
+
+#[cfg(feature = "pjsip")]
+pub use pjsip::PjsipBackend;
 
 use std::collections::HashMap;
 use tokio::sync::mpsc;

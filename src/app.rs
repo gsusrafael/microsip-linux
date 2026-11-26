@@ -13,7 +13,11 @@ const APP_ID: &str = "org.microsip.linux";
 
 pub struct MicroSipApp {
     app: Application,
+    #[cfg(feature = "pjsip")]
+    sip: sip::PjsipBackend,
+    #[cfg(not(feature = "pjsip"))]
     sip: sip::MockBackend,
+    tray: tray::TrayManager,
 }
 
 impl MicroSipApp {
@@ -22,14 +26,48 @@ impl MicroSipApp {
             .application_id(APP_ID)
             .build();
 
-        let mut backend = sip::MockBackend::new();
-        // comandos SIP hacia el backend (v2, aún no conectados al mock)
+        #[cfg(feature = "pjsip")]
+        {
+            use crate::sip::SipBackend;
+            let mut backend = sip::PjsipBackend::new();
+            if let Err(e) = backend.init() {
+                warn!(target: "sip::pjsip", "no se pudo inicializar PJSUA: {e}");
+            }
+            // Cuenta de ejemplo (demo) — configurar contra un servidor SIP real.
+            // Descomentar y ajustar para registrar una cuenta real:
+            // backend.configure_account(
+            //     sip::AccountId("demo@example.com".into()), "demo", "sip.example.com");
+            let tray = tray::TrayManager::default();
+            Self { app, sip: backend, tray }
+        }
 
-        // Cuenta de ejemplo (mock) para que la UI tenga algo que mostrar.
-        let demo = sip::AccountId("demo@example.com".into());
-        backend.simulate_registered(demo.clone());
+        #[cfg(not(feature = "pjsip"))]
+        {
+            let mut backend = sip::MockBackend::new();
+            // Cuenta de ejemplo (mock) para que la UI tenga algo que mostrar.
+            let demo = sip::AccountId("demo@example.com".into());
+            backend.simulate_registered(demo.clone());
 
-        Self { app, sip: backend }
+            let app_weak = app.downgrade();
+            let tray_cb = Arc::new(move |action| match action {
+                tray::TrayAction::ShowWindow => {
+                    if let Some(app) = app_weak.upgrade() {
+                        info!(target: "tray", "acción: mostrar ventana");
+                    }
+                }
+                tray::TrayAction::Quit => {
+                    info!(target: "tray", "acción: salir");
+                    std::process::exit(0);
+                }
+            });
+
+            let tray = tray::TrayManager::new(tray_cb).unwrap_or_else(|e| {
+                warn!(target: "tray", "bandeja no disponible: {e}");
+                tray::TrayManager::default()
+            });
+
+            Self { app, sip: backend, tray }
+        }
     }
 
     pub fn run(&self) {
@@ -72,14 +110,6 @@ impl MicroSipApp {
 
         info!(target: "microsip", "aplicación iniciada ({APP_ID})");
         app.run();
-        // `tray` se mantiene vivo hasta que `app.run()` retorna.
         let _ = tray;
     }
-}
-
-#[allow(dead_code)]
-fn _assert_sip_backend()
-where
-    sip::MockBackend: sip::SipBackend,
-{
 }

@@ -1027,6 +1027,7 @@ version = "0.1.0"
 dependencies = [
  "glib 0.17.10",
  "gtk4",
+ "pkg-config",
  "tokio",
  "tracing",
  "tracing-subscriber",
