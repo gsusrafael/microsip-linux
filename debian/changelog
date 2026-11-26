@@ -1,7 +1,12 @@
 microsip-linux (0.1.0-1) unstable; urgency=medium
 
   * Initial release: MicroSIP port to Linux.
-    Interfaz GTK4, cuentas SIP, marcador, llamadas, bandeja del sistema y
-    backend SIP (mock listo; PJSIP vía FFI pendiente de integrar).
+    Interfaz GTK4 (cuentas persistentes, marcador, llamadas entrantes y
+    salientes, DTMF), bandeja del sistema vía StatusNotifierItem/D-Bus
+    (ksni, sin GTK3) y backend SIP seleccionable: mock o PJSIP real vía FFI
+    (--features pjsip), con pjproject enlazado estáticamente.
+  * Empaquetado cargo-deb: dependencias resueltas con dpkg-shlibdeps
+    ($auto) + libasound2t64 (backend ALSA de pjmedia); libasound2-plugins
+    como recomendación para el puente ALSA→PulseAudio.
 
- -- Jesús Rafael Sánchez <jesusrafael@gmail.com>  Wed, 25 Nov 2026 12:00:00 +0000
+ -- Jesús Rafael Sánchez <jesusrafael@gmail.com>  Thu, 26 Nov 2026 15:30:00 +0000

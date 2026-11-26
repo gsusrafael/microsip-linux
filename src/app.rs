@@ -1,115 +1,136 @@
-//! Aplicación MicroSIP: aplicación GTK4, ventana principal, backend SIP y bandeja.
+//! Aplicación MicroSIP: una única instancia GTK4, un único backend SIP,
+//! una única bandeja y un único puente de eventos hacia el hilo GTK4.
 
-use crate::{main_window, sip, tray};
+use crate::{config, main_window, sip, tray};
 use gtk4::prelude::*;
-use gtk4::{Application, ApplicationWindow};
-use glib::MainContext;
-use std::rc::Rc;
+use gtk4::Application;
+use sip::SipBackend;
 use std::cell::RefCell;
+use std::rc::Rc;
 use std::sync::Arc;
 use tracing::{info, warn};
+
+use tray::TrayAction;
 
 const APP_ID: &str = "org.microsip.linux";
 
 pub struct MicroSipApp {
     app: Application,
-    #[cfg(feature = "pjsip")]
-    sip: sip::PjsipBackend,
-    #[cfg(not(feature = "pjsip"))]
-    sip: sip::MockBackend,
-    tray: tray::TrayManager,
+    sip: Rc<RefCell<Box<dyn sip::SipBackend>>>,
+    events: Rc<RefCell<Option<sip::SipEventStream>>>,
+    window: Rc<RefCell<Option<main_window::MainWindow>>>,
 }
 
 impl MicroSipApp {
     pub fn new() -> Self {
-        let app = Application::builder()
-            .application_id(APP_ID)
-            .build();
+        let app = Application::builder().application_id(APP_ID).build();
 
-        #[cfg(feature = "pjsip")]
-        {
-            use crate::sip::SipBackend;
-            let mut backend = sip::PjsipBackend::new();
-            if let Err(e) = backend.init() {
-                warn!(target: "sip::pjsip", "no se pudo inicializar PJSUA: {e}");
+        let (backend, events) = match sip::create_backend() {
+            Ok(pair) => pair,
+            Err(err) => {
+                warn!(target: "sip", "no se pudo iniciar el backend real ({err}); usando mock");
+                let mut mock = sip::MockBackend::new();
+                let _ = mock.init();
+                let events = mock.event_stream();
+                (Box::new(mock) as Box<dyn sip::SipBackend>, events)
             }
-            // Cuenta de ejemplo (demo) — configurar contra un servidor SIP real.
-            // Descomentar y ajustar para registrar una cuenta real:
-            // backend.configure_account(
-            //     sip::AccountId("demo@example.com".into()), "demo", "sip.example.com");
-            let tray = tray::TrayManager::default();
-            Self { app, sip: backend, tray }
+        };
+        let sip = Rc::new(RefCell::new(backend));
+
+        // Cargar cuentas persistidas y registrarlas en el backend.
+        for account in config::load() {
+            info!(target: "config", "cargando cuenta {}", account.id);
+            sip.borrow()
+                .send_command(sip::SipCommand::ConfigureAccount {
+                    id: sip::AccountId(account.id.clone()),
+                    username: account.username,
+                    password: account.password,
+                    domain: account.domain,
+                    display_name: account.display_name,
+                    proxy: account.proxy,
+                });
         }
 
-        #[cfg(not(feature = "pjsip"))]
-        {
-            let mut backend = sip::MockBackend::new();
-            // Cuenta de ejemplo (mock) para que la UI tenga algo que mostrar.
-            let demo = sip::AccountId("demo@example.com".into());
-            backend.simulate_registered(demo.clone());
-
-            let app_weak = app.downgrade();
-            let tray_cb = Arc::new(move |action| match action {
-                tray::TrayAction::ShowWindow => {
-                    if let Some(app) = app_weak.upgrade() {
-                        info!(target: "tray", "acción: mostrar ventana");
-                    }
-                }
-                tray::TrayAction::Quit => {
-                    info!(target: "tray", "acción: salir");
-                    std::process::exit(0);
-                }
-            });
-
-            let tray = tray::TrayManager::new(tray_cb).unwrap_or_else(|e| {
-                warn!(target: "tray", "bandeja no disponible: {e}");
-                tray::TrayManager::default()
-            });
-
-            Self { app, sip: backend, tray }
+        Self {
+            app,
+            sip,
+            events: Rc::new(RefCell::new(Some(events))),
+            window: Rc::new(RefCell::new(None)),
         }
     }
 
     pub fn run(&self) {
         let app = &self.app;
+        let sip = Rc::clone(&self.sip);
+        let events = Rc::clone(&self.events);
+        let window = Rc::clone(&self.window);
 
-        // Celda compartida (solo hilo principal) para guardar la ventana y
-        // poder mostrarla desde el hilo de bandeja vía MainContext::channel.
-        let window_cell = Rc::new(RefCell::new(None::<ApplicationWindow>));
-        let window_cell_activate = window_cell.clone();
-
-        let (show_tx, show_rx) = MainContext::channel(glib::Priority::default());
-        let window_cell_show = window_cell.clone();
-        show_rx.attach(None, move |_| {
-            if let Some(win) = window_cell_show.borrow().as_ref() {
-                win.present();
+        // Bandeja -> hilo GTK4. La bandeja solo captura el Sender (Send).
+        let (tray_tx, tray_rx) =
+            glib::MainContext::channel::<TrayAction>(glib::Priority::default());
+        let app_for_tray = app.clone();
+        let window_for_tray = Rc::clone(&window);
+        tray_rx.attach(None, move |action| {
+            match action {
+                TrayAction::ShowWindow => {
+                    if let Some(win) = window_for_tray.borrow().as_ref() {
+                        win.present();
+                    }
+                }
+                TrayAction::Quit => {
+                    info!(target: "tray", "saliendo desde la bandeja");
+                    app_for_tray.quit();
+                }
             }
             glib::Continue(true)
         });
 
-        let tray_cb = Arc::new(move |action| match action {
-            tray::TrayAction::ShowWindow => {
-                let _ = show_tx.send(());
-            }
-            tray::TrayAction::Quit => {
-                info!(target: "tray", "salir desde bandeja");
-                std::process::exit(0);
-            }
-        });
-
-        let tray = tray::TrayManager::new(tray_cb).unwrap_or_else(|e| {
-            warn!(target: "tray", "bandeja no disponible: {e}");
-            tray::TrayManager::default()
-        });
+        let tray_cell = Rc::new(RefCell::new(None::<tray::TrayManager>));
+        let tray_cell_activate = Rc::clone(&tray_cell);
 
         app.connect_activate(move |app| {
-            let win = main_window::build(app);
-            *window_cell_activate.borrow_mut() = Some(win.clone());
+            // Crear la bandeja una sola vez, después de inicializar GTK.
+            if tray_cell_activate.borrow().is_none() {
+                let tray_tx_for_cb = tray_tx.clone();
+                let tray_cb = Arc::new(move |action: TrayAction| {
+                    let _ = tray_tx_for_cb.send(action);
+                });
+                let created = tray::TrayManager::new(tray_cb).unwrap_or_else(|err| {
+                    warn!(target: "tray", "bandeja no disponible: {err}");
+                    tray::TrayManager::default()
+                });
+                *tray_cell_activate.borrow_mut() = Some(created);
+            }
+
+            // Activación repetida (segundo clic en el .desktop): reutilizar ventana.
+            if let Some(existing) = window.borrow().as_ref() {
+                existing.present();
+                return;
+            }
+
+            let win = main_window::build(app, Rc::clone(&sip));
+
+            #[cfg(feature = "test-hooks")]
+            win.test_dial_if_configured();
+
+            // Puente de eventos SIP -> hilo GTK4 (solo una vez).
+            if let Some(mut stream) = events.borrow_mut().take() {
+                let ui = win.clone();
+                glib::MainContext::default().spawn_local(async move {
+                    while let Some(event) = stream.recv().await {
+                        ui.handle_event(&event);
+                    }
+                });
+            }
+
+            *window.borrow_mut() = Some(win.clone());
             win.present();
         });
 
         info!(target: "microsip", "aplicación iniciada ({APP_ID})");
         app.run();
-        let _ = tray;
+
+        // Mantener viva la bandeja hasta que termine el main loop.
+        let _ = tray_cell;
     }
 }

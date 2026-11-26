@@ -1,12 +1,10 @@
 //! Bandeja del sistema (system tray).
 //!
-//! Usa `tray-icon` (appindicator en GNOME/Ubuntu, KSNI en KDE). Está detrás
-//! de la feature `tray` porque requiere `libayatana-appindicator3-dev` en el
-//! host. Si se compila con `--no-default-features` la app sigue funcionando
-//! sin bandeja.
+//! Implementa StatusNotifierItem (SNI) con `ksni` sobre D-Bus. A diferencia
+//! de `tray-icon`, no usa GTK3, por lo que no entra en conflicto con la GTK4
+//! de la aplicación. Está detrás de la feature `tray`.
 
 use std::sync::Arc;
-use std::thread;
 
 /// Acciones que el bandeja puede solicitar.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -18,61 +16,79 @@ pub enum TrayAction {
 /// Callback que invoca el bandeja cuando el usuario interactúa con el icono.
 pub type TrayCallback = Arc<dyn Fn(TrayAction) + Send + Sync>;
 
-/// Manejador de bandeja. El icono debe mantenerse vivo (`_icon`) para que el
-/// icono persista en el panel.
+/// Manejador de bandeja. El servicio SNI debe mantenerse vivo.
 pub struct TrayManager {
     #[cfg(feature = "tray")]
-    _icon: Option<tray_icon::TrayIcon>,
-    cb: Option<TrayCallback>,
+    _handle: Option<ksni::blocking::Handle<SniTray>>,
+}
+
+#[cfg(feature = "tray")]
+pub struct SniTray {
+    cb: TrayCallback,
+}
+
+#[cfg(feature = "tray")]
+impl ksni::Tray for SniTray {
+    fn id(&self) -> String {
+        "microsip-linux".into()
+    }
+
+    fn title(&self) -> String {
+        "MicroSIP".into()
+    }
+
+    fn icon_name(&self) -> String {
+        "phone".into()
+    }
+
+    fn activate(&mut self, _x: i32, _y: i32) {
+        (self.cb)(TrayAction::ShowWindow);
+    }
+
+    fn menu(&self) -> Vec<ksni::menu::MenuItem<Self>> {
+        let show_cb = Arc::clone(&self.cb);
+        let show = ksni::menu::StandardItem {
+            label: "Mostrar MicroSIP".into(),
+            activate: Box::new(move |_this: &mut Self| show_cb(TrayAction::ShowWindow)),
+            ..Default::default()
+        };
+
+        let quit_cb = Arc::clone(&self.cb);
+        let quit = ksni::menu::StandardItem {
+            label: "Salir".into(),
+            activate: Box::new(move |_this: &mut Self| quit_cb(TrayAction::Quit)),
+            ..Default::default()
+        };
+
+        vec![show.into(), quit.into()]
+    }
 }
 
 impl TrayManager {
-    /// Crea el icono de bandeja. El clic izquierdo sobre el icono emite
-    /// `TrayAction::ShowWindow`.
+    /// Crea el icono de bandeja (SNI). Clic izquierdo o menú -> mostrar /
+    /// salir.
     pub fn new(cb: TrayCallback) -> Result<Self, String> {
         #[cfg(feature = "tray")]
         {
-            use tray_icon::menu::{Menu, PredefinedMenuItem};
-            use tray_icon::{TrayEvent, TrayIconBuilder};
+            use ksni::blocking::TrayMethods;
 
-            let menu = Menu::new();
-            // Un menú vacío es suficiente en Linux para que el icono aparezca.
-            let _sep = PredefinedMenuItem::separator();
-
-            let cb_click = cb.clone();
-            let _icon = TrayIconBuilder::new()
-                .with_menu(Box::new(menu))
-                .with_tooltip("MicroSIP")
-                .build()
+            let tray = SniTray {
+                cb: Arc::clone(&cb),
+            };
+            let handle = tray
+                .assume_sni_available(true)
+                .spawn()
                 .map_err(|e| format!("no se pudo crear el icono de bandeja: {e}"))?;
 
-            // Hilo de eventos: clic izquierdo sobre el icono -> mostrar ventana.
-            thread::spawn(move || {
-                let rx = TrayEvent::receiver();
-                while let Ok(event) = rx.recv() {
-                    use tray_icon::ClickEvent;
-                    if event.event == ClickEvent::Left {
-                        cb_click(TrayAction::ShowWindow);
-                    }
-                }
-            });
-
             Ok(Self {
-                _icon: Some(_icon),
-                cb: Some(cb),
+                _handle: Some(handle),
             })
         }
 
         #[cfg(not(feature = "tray"))]
         {
-            Ok(Self {
-                cb: Some(cb),
-            })
+            Ok(Self {})
         }
-    }
-
-    pub fn callback(&self) -> Option<&TrayCallback> {
-        self.cb.as_ref()
     }
 }
 
@@ -80,8 +96,7 @@ impl Default for TrayManager {
     fn default() -> Self {
         Self {
             #[cfg(feature = "tray")]
-            _icon: None,
-            cb: None,
+            _handle: None,
         }
     }
 }

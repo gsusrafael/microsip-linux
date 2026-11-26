@@ -5,6 +5,7 @@
 //!   cargo run --no-default-features -> sin bandeja (útil si faltan dev-libs C)
 
 mod app;
+mod config;
 mod main_window;
 mod sip;
 mod tray;

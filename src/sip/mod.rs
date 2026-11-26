@@ -1,25 +1,21 @@
 //! Capa de red SIP.
 //!
-//! La implementación real de MicroSIP usa PJSIP (C). Aquí definimos un
-//! `SipBackend` trait para poder desarrollar la UI en Rust sin depender de
-//! librerías C, y dejamos un backend `mock` listo para desarrollar sin red.
-//! Cuando la feature `pjsip` está activa, se compila además el backend real
-//! vía FFI contra pjproject (ver `src/sip/pjsip.rs`).
+//! Define un backend abstracto para poder alternar entre un mock de
+//! desarrollo y PJSIP real sin tocar la UI. La fábrica `create_backend()`
+//! garantiza una sola instancia y un único consumidor de eventos.
 
 #[cfg(feature = "pjsip")]
 mod pjsip;
 
-#[cfg(feature = "pjsip")]
-pub use pjsip::PjsipBackend;
-
 use std::collections::HashMap;
+use std::sync::Mutex;
 use tokio::sync::mpsc;
 
-/// Identificador de una cuenta SIP configurada.
+/// Identificador estable de una cuenta SIP.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct AccountId(pub String);
 
-/// Identificador de una llamada activa.
+/// Identificador de una llamada.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct CallId(pub String);
 
@@ -39,23 +35,61 @@ pub enum CallState {
     Idle,
     Outgoing,
     Incoming,
-    Early,       // ringing far end
+    Early,
     Connected,
     Disconnecting,
     Disconnected,
     Failed,
 }
 
-/// Evento que emite el backend SIP hacia la UI.
+/// Información de cuenta mostrada por la UI.
 #[derive(Debug, Clone)]
-pub enum SipEvent {
-    RegistrationChanged { account: AccountId, state: RegistrationState },
-    CallStateChanged { call: CallId, state: CallState },
-    CallIncoming { call: CallId, from: String, to: String },
-    Log { level: tracing::Level, message: String },
+pub struct AccountInfo {
+    pub id: AccountId,
+    pub username: String,
+    pub domain: String,
+    pub display_name: String,
+    pub state: RegistrationState,
+    pub status_text: String,
 }
 
-/// Comando que la UI envía al backend SIP.
+/// Información de llamada mostrada por la UI.
+#[derive(Debug, Clone)]
+pub struct CallInfo {
+    pub id: CallId,
+    pub peer: String,
+    pub state: CallState,
+    pub incoming: bool,
+}
+
+/// Evento emitido por el backend hacia la UI.
+#[derive(Debug, Clone)]
+pub enum SipEvent {
+    RegistrationChanged {
+        account: AccountId,
+        state: RegistrationState,
+        status_text: String,
+    },
+    CallStateChanged {
+        call: CallId,
+        state: CallState,
+        peer: String,
+        incoming: bool,
+    },
+    CallIncoming {
+        call: CallId,
+        from: String,
+        to: String,
+    },
+    AccountListChanged,
+    CallListChanged,
+    Log {
+        level: tracing::Level,
+        message: String,
+    },
+}
+
+/// Comando enviado por la UI al backend.
 #[derive(Debug)]
 pub enum SipCommand {
     ConfigureAccount {
@@ -64,69 +98,183 @@ pub enum SipCommand {
         password: String,
         domain: String,
         display_name: String,
+        proxy: String,
     },
-    UnregisterAccount { id: AccountId },
-    Dial { account: AccountId, to: String },
-    Answer { call: CallId },
-    Reject { call: CallId },
-    Hangup { call: CallId },
-    SendDtmf { call: CallId, digit: char },
+    UnregisterAccount {
+        id: AccountId,
+    },
+    DeleteAccount {
+        id: AccountId,
+    },
+    Dial {
+        account: AccountId,
+        to: String,
+    },
+    Answer {
+        call: CallId,
+    },
+    Reject {
+        call: CallId,
+    },
+    Hangup {
+        call: CallId,
+    },
+    SendDtmf {
+        call: CallId,
+        digit: char,
+    },
 }
 
-/// Resultado de un comando SIP.
-#[derive(Debug)]
-pub enum SipResult {
-    Ok,
-    Error { code: u16, message: String },
-}
-
-/// Canal de comandos UI -> backend.
-pub type SipCommandSender = mpsc::UnboundedSender<SipCommand>;
-/// Canal de eventos backend -> UI.
 pub type SipEventStream = mpsc::UnboundedReceiver<SipEvent>;
 
-/// Backend SIP abstracto. Permite intercambiar mock <-> PJSIP sin tocar la UI.
-pub trait SipBackend: Send + Sync + 'static {
+/// Backend SIP abstracto. Solo vive en el hilo GTK4; los callbacks de PJSIP
+/// envían eventos por canal, no comparten el objeto.
+pub trait SipBackend: 'static {
     fn init(&mut self) -> Result<(), String>;
     fn event_stream(&mut self) -> SipEventStream;
     fn send_command(&self, cmd: SipCommand);
-    fn registration_state(&self, id: &AccountId) -> RegistrationState;
-    fn calls(&self) -> Vec<(CallId, CallState, String)>;
+    fn accounts(&self) -> Vec<AccountInfo>;
+    fn default_account(&self) -> Option<AccountId>;
+    fn calls(&self) -> Vec<CallInfo>;
+}
+
+/// Fábrica única: crea el backend activo, lo inicializa y entrega el stream
+/// exactamente una vez.
+pub fn create_backend() -> Result<(Box<dyn SipBackend>, SipEventStream), String> {
+    #[cfg(feature = "pjsip")]
+    let mut backend: Box<dyn SipBackend> = Box::new(pjsip::PjsipBackend::new());
+    #[cfg(not(feature = "pjsip"))]
+    let mut backend: Box<dyn SipBackend> = Box::new(MockBackend::new());
+
+    backend.init()?;
+    let events = backend.event_stream();
+    Ok((backend, events))
 }
 
 // ---------------------------------------------------------------------------
-// Backend mock (desarrollo / demostración sin PJSIP)
+// Backend mock
 // ---------------------------------------------------------------------------
 
-#[derive(Debug)]
-pub struct MockBackend {
-    /// Comandos UI -> backend (no usados por el mock v1, listos para FFI).
-    _cmd_tx: SipCommandSender,
-    /// Eventos backend -> UI.
-    event_tx: mpsc::UnboundedSender<SipEvent>,
-    rx: mpsc::UnboundedReceiver<SipEvent>,
-    accounts: HashMap<AccountId, RegistrationState>,
-    calls: HashMap<CallId, (CallState, String)>,
+#[derive(Debug, Default)]
+struct MockState {
+    accounts: HashMap<AccountId, AccountInfo>,
+    calls: HashMap<CallId, CallInfo>,
     next_call: u64,
+}
+
+pub struct MockBackend {
+    event_tx: mpsc::UnboundedSender<SipEvent>,
+    event_rx: mpsc::UnboundedReceiver<SipEvent>,
+    state: Mutex<MockState>,
 }
 
 impl MockBackend {
     pub fn new() -> Self {
-        let (cmd_tx, _cmd_rx) = mpsc::unbounded_channel::<SipCommand>();
-        let (event_tx, rx) = mpsc::unbounded_channel::<SipEvent>();
+        let (event_tx, event_rx) = mpsc::unbounded_channel();
         Self {
-            _cmd_tx: cmd_tx,
             event_tx,
-            rx,
-            accounts: HashMap::new(),
-            calls: HashMap::new(),
-            next_call: 0,
+            event_rx,
+            state: Mutex::new(MockState::default()),
         }
     }
 
-    fn next_call_id(&mut self) -> CallId {
-        self.next_call += 1;
-        CallId(format!("call-{}", self.next_call))
+    fn emit(&self, event: SipEvent) {
+        let _ = self.event_tx.send(event);
+    }
+
+    fn configure(&self, cmd: SipCommand) {
+        if let SipCommand::ConfigureAccount {
+            id,
+            username,
+            password: _,
+            domain,
+            display_name,
+            proxy: _,
+        } = cmd
+        {
+            let mut state = self.state.lock().unwrap();
+            state.accounts.insert(
+                id.clone(),
+                AccountInfo {
+                    id: id.clone(),
+                    username,
+                    domain,
+                    display_name,
+                    state: RegistrationState::Registering,
+                    status_text: "Registering…".into(),
+                },
+            );
+            drop(state);
+
+            self.emit(SipEvent::AccountListChanged);
+            self.emit(SipEvent::RegistrationChanged {
+                account: id.clone(),
+                state: RegistrationState::Ok,
+                status_text: "Registered".into(),
+            });
+
+            let mut state = self.state.lock().unwrap();
+            if let Some(account) = state.accounts.get_mut(&id) {
+                account.state = RegistrationState::Ok;
+                account.status_text = "Registered".into();
+            }
+            self.emit(SipEvent::AccountListChanged);
+        }
+    }
+
+    fn dial(&self, account: AccountId, to: String) {
+        let mut state = self.state.lock().unwrap();
+        state.next_call += 1;
+        let call = CallId(format!("mock-{}", state.next_call));
+        state.calls.insert(
+            call.clone(),
+            CallInfo {
+                id: call.clone(),
+                peer: to.clone(),
+                state: CallState::Outgoing,
+                incoming: false,
+            },
+        );
+        drop(state);
+
+        self.emit(SipEvent::CallListChanged);
+        self.emit(SipEvent::CallStateChanged {
+            call: call.clone(),
+            state: CallState::Early,
+            peer: to.clone(),
+            incoming: false,
+        });
+
+        let mut state = self.state.lock().unwrap();
+        if let Some(info) = state.calls.get_mut(&call) {
+            info.state = CallState::Connected;
+        }
+        drop(state);
+        self.emit(SipEvent::CallStateChanged {
+            call,
+            state: CallState::Connected,
+            peer: to,
+            incoming: false,
+        });
+        let _ = account;
+    }
+
+    fn set_call_state(&self, call: &CallId, state: CallState) {
+        let mut state_guard = self.state.lock().unwrap();
+        let Some(info) = state_guard.calls.get_mut(call) else {
+            return;
+        };
+        info.state = state;
+        let peer = info.peer.clone();
+        let incoming = info.incoming;
+        drop(state_guard);
+        self.emit(SipEvent::CallStateChanged {
+            call: call.clone(),
+            state,
+            peer,
+            incoming,
+        });
+        self.emit(SipEvent::CallListChanged);
     }
 }
 
@@ -137,48 +285,79 @@ impl SipBackend for MockBackend {
     }
 
     fn event_stream(&mut self) -> SipEventStream {
-        // UnboundedReceiver no es Clone: se transfiere y se deja uno nuevo
-        // (un solo consumidor: la UI).
-        std::mem::replace(&mut self.rx, mpsc::unbounded_channel().1)
+        std::mem::replace(&mut self.event_rx, mpsc::unbounded_channel().1)
     }
 
-    fn send_command(&self, _cmd: SipCommand) {
-        // El mock se impulsa directamente con simulate_*; en FFI este canal
-        // se conectará al endpoint PJSIP.
-        let _ = (_cmd,);
+    fn send_command(&self, cmd: SipCommand) {
+        match cmd {
+            SipCommand::ConfigureAccount { .. } => self.configure(cmd),
+            SipCommand::UnregisterAccount { id } => {
+                let mut state = self.state.lock().unwrap();
+                if let Some(account) = state.accounts.get_mut(&id) {
+                    account.state = RegistrationState::Unknown;
+                    account.status_text = "Unregistered".into();
+                }
+                drop(state);
+                self.emit(SipEvent::AccountListChanged);
+            }
+            SipCommand::DeleteAccount { id } => {
+                self.state.lock().unwrap().accounts.remove(&id);
+                self.emit(SipEvent::AccountListChanged);
+            }
+            SipCommand::Dial { account, to } => self.dial(account, to),
+            SipCommand::Answer { call } => self.set_call_state(&call, CallState::Connected),
+            SipCommand::Reject { call } | SipCommand::Hangup { call } => {
+                self.set_call_state(&call, CallState::Disconnected)
+            }
+            SipCommand::SendDtmf { .. } => {}
+        }
     }
 
-    fn registration_state(&self, id: &AccountId) -> RegistrationState {
-        self.accounts.get(id).copied().unwrap_or(RegistrationState::Unknown)
-    }
-
-    fn calls(&self) -> Vec<(CallId, CallState, String)> {
-        self.calls
-            .iter()
-            .map(|(id, (state, peer))| (id.clone(), *state, peer.clone()))
+    fn accounts(&self) -> Vec<AccountInfo> {
+        self.state
+            .lock()
+            .unwrap()
+            .accounts
+            .values()
+            .cloned()
             .collect()
+    }
+
+    fn default_account(&self) -> Option<AccountId> {
+        self.state.lock().unwrap().accounts.keys().next().cloned()
+    }
+
+    fn calls(&self) -> Vec<CallInfo> {
+        self.state.lock().unwrap().calls.values().cloned().collect()
     }
 }
 
-impl MockBackend {
-    /// Simula el registro OK de una cuenta (pruebas de UI).
-    pub fn simulate_registered(&mut self, id: AccountId) {
-        self.accounts.insert(id.clone(), RegistrationState::Ok);
-        let _ = self.event_tx.send(SipEvent::RegistrationChanged {
-            account: id,
-            state: RegistrationState::Ok,
-        });
-    }
+#[cfg(test)]
+mod tests {
+    use super::*;
 
-    /// Simula una llamada entrante.
-    pub fn simulate_incoming(&mut self, from: &str, to: &str) -> CallId {
-        let id = self.next_call_id();
-        self.calls.insert(id.clone(), (CallState::Incoming, from.to_string()));
-        let _ = self.event_tx.send(SipEvent::CallIncoming {
-            call: id.clone(),
-            from: from.to_string(),
-            to: to.to_string(),
+    #[test]
+    fn mock_command_emits_registration() {
+        let mut backend = MockBackend::new();
+        let mut rx = backend.event_stream();
+        backend.send_command(SipCommand::ConfigureAccount {
+            id: AccountId("a@localhost".into()),
+            username: "a".into(),
+            password: "x".into(),
+            domain: "localhost".into(),
+            display_name: "A".into(),
+            proxy: String::new(),
         });
-        id
+        let mut saw_ok = false;
+        while let Ok(event) = rx.try_recv() {
+            if let SipEvent::RegistrationChanged {
+                state: RegistrationState::Ok,
+                ..
+            } = event
+            {
+                saw_ok = true;
+            }
+        }
+        assert!(saw_ok);
     }
 }

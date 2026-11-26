@@ -1,0 +1,18 @@
+{
+  "_comment": "sip-lab throwaway test accounts — loopback only, digest MD5. NOT real credentials; do not reuse.",
+  "realm": "sip-lab",
+  "users": {
+    "1001": {
+      "password": "lab-1001-test",
+      "name": "test ext 1001"
+    },
+    "1002": {
+      "password": "lab-1002-test",
+      "name": "test ext 1002"
+    },
+    "1003": {
+      "password": "lab-1003-test",
+      "name": "test ext 1003"
+    }
+  }
+}

@@ -4,13 +4,16 @@ Port de [MicroSIP](https://www.microsip.org/) (softphone SIP basado en PJSIP) a
 Linux, escrito en **Rust + GTK4**, con soporte de **bandeja del sistema** y
 empaquetado como **.deb** para Debian/Ubuntu.
 
-> **Estado:** v0.1.0 — PJSIP FFI **funcional**. Los structs C se generan con
-> **bindgen** desde `~/.local/include/pjsua-lib/pjsua.h` (layout exacto de
-> pjproject 2.15). `pjsua_init` se ejecuta correctamente: PJSUA pasa a estado
-> `CREATED` y registra todos los módulos SIP (mod-ua, mod-invite, etc.).
-> La UI (cuentas, marcador, llamadas, bandeja) funciona con el backend
-> seleccionable: **mock** (por defecto, sin dependencias) o **PJSIP real**
-> (`--features pjsip`).
+> **Estado:** v0.1.0 — integración UI ↔ PJSIP completa y empaquetada.
+> Los structs C se generan con **bindgen** desde
+> `~/.local/include/pjsua-lib/pjsua.h` (layout exacto de pjproject 2.15).
+> La UI GTK4 usa **un único backend SIP** (mock o PJSIP real con
+> `--features pjsip`), con cuentas persistentes en
+> `~/.config/microsip-linux/accounts.conf` (permisos 600), llamadas
+> entrantes/salientes, contestar/rechazar/colgar, DTMF y eventos SIP
+> enlazados al hilo GTK4. PJSUA se inicia con transporte UDP y worker thread;
+> el audio usa el backend ALSA de pjmedia. La bandeja usa **ksni**
+> (StatusNotifierItem/D-Bus, sin GTK3).
 
 ---
 
@@ -24,14 +27,17 @@ microsip-linux/
 ├── src/
 │   ├── main.rs           # punto de entrada
 │   ├── app.rs            # aplicación GTK4 + selección de backend SIP
+│   ├── config.rs         # cuentas persistentes (~/.config/microsip-linux)
 │   ├── main_window.rs    # ventana principal (stack: cuentas/marcador/llamadas)
-│   ├── tray.rs           # bandeja del sistema (tray-icon / appindicator)
+│   ├── tray.rs           # bandeja del sistema (ksni / StatusNotifierItem D-Bus)
 │   └── sip/
 │       ├── mod.rs        # trait SipBackend + backend mock
 │       └── pjsip.rs      # bindings FFI contra PJSUA (feature pjsip)
 ├── assets/
 │   ├── microsip-linux.desktop
 │   └── icon.svg
+├── tests/
+│   └── sip-lab/          # PBX local de prueba (Python) + suite de 36 tests
 └── debian/
     ├── control
     └── changelog
@@ -42,13 +48,24 @@ microsip-linux/
 ## Requisitos del sistema
 
 ### Para ejecutar (runtime)
-- `libgtk-4-0`
-- `libayatana-appindicator3-1` (bandeja del sistema)
-- `libglib2.0-0`
+- `libgtk-4-1` (GTK4) — la bandeja usa **ksni** (StatusNotifierItem sobre
+  D-Bus) y **no** necesita GTK3 ni libayatana-appindicator. El escritorio debe
+  alojar un StatusNotifierItem (KDE lo trae; GNOME requiere la extensión
+  *AppIndicator and KStatusNotifierItem support*).
+- `libglib2.0-0t64`, `libssl3t64`, `libxdo3`, `libuuid1`, `libgdk-pixbuf-2.0-0`,
+  `libpango-1.0-0` (enlaces directos del binario)
+- `libasound2t64` (backend ALSA de `pjmedia-audiodev`)
+- `libasound2-plugins` (recomendado: puente ALSA→PulseAudio; pjproject no
+  tiene backend Pulse propio)
+
+> Los nombres de paquete son los de Ubuntu 24.04/Debian 13 (t64): en
+> Ubuntu 22.04/Debian 12 serían `libgtk-4-1`, `libglib2.0-0`, `libssl3`,
+> `libasound2`. El `.deb` se genera con `Depends: $auto` →
+> `dpkg-shlibdeps` resuelve los nombres según la máquina de build.
 
 ### Para compilar
 - `rustc` + `cargo` (1.70+)
-- `libgtk-4-dev`, `libayatana-appindicator3-dev`, `libglib2.0-dev`, `pkg-config`
+- `libgtk-4-dev`, `libglib2.0-dev`, `libasound2-dev`, `pkg-config`
 
 > En tu máquina no hay `sudo` disponible, así que las dev-libs se bajaron con
 > `apt download` y se extrajeron a `~/.local/deps/`; `.cargo/config.toml` ya
@@ -67,11 +84,11 @@ cargo build --release          # compila sin PJSIP
 ```
 
 La app abre una ventana GTK4 con:
-- **Cuentas**: cuenta de ejemplo `demo@example.com` (registrado, mock)
+- **Cuentas**: cuentas guardadas o vacía (botón «＋ Cuenta»)
 - **Marcador**: teclado numérico y botón "Llamar"
-- **Llamadas**: lista de llamadas activas
+- **Llamadas**: lista de llamadas activas (contestar/rechazar/colgar/DTMF)
 - **Bandeja**: al cerrar la ventana, se oculta a la bandeja del sistema
-  (clic en el icono para mostrarla de nuevo)
+  (clic en el icono para mostrarla; menú «Salir»)
 
 ### 2. Con PJSIP real vía FFI
 
@@ -107,6 +124,21 @@ El `.deb` incluye:
 - `/usr/bin/microsip-linux`
 - `/usr/share/applications/microsip-linux.desktop`
 - `/usr/share/icons/hicolor/scalable/apps/microsip-linux.svg`
+- `/usr/share/doc/microsip-linux/{copyright,changelog.Debian.gz}`
+
+**Dependencias del paquete.** `Depends` se arma con `$auto`
+(`dpkg-shlibdeps` sobre el binario → `libgtk-4-1`, `libglib2.0-0t64`,
+`libssl3t64`, `libxdo3`, `libuuid1`… con su versión mínima) **más**
+`libasound2t64` (backend ALSA de `pjmedia-audiodev`, enlazado en `build.rs`).
+La bandeja usa **ksni** (SNI/D-Bus), sin libayatana-appindicator.
+
+`Recommends: libasound2-plugins` aporta el puente ALSA→PulseAudio (pjproject
+no tiene backend Pulse nativo). **pjproject se enlaza estático** en el binario
+→ el `.deb` **no** depende de `libpjproject`/`libpj-*`.
+
+> Ojo con `dest` en `[package.metadata.deb] assets`: sin `/` final y sin
+> nombre de fichero, cargo-deb escribe el archivo **exactamente** en esa ruta
+> (creaba un fichero llamado `/usr/bin`, dejando el `.deb` ininstalable).
 
 ---
 
@@ -118,16 +150,20 @@ recompilarlo desde cero:
 
 ```bash
 cd /home/jesus/.local/src/pjsip/pjproject
-./configure --prefix=$HOME/.local --disable-shared --enable-static \
+./configure --prefix=$HOME/.local --disable-shared \
+    CFLAGS="-I$HOME/.local/deps/usr/include" \
+    LDFLAGS="-L$HOME/.local/deps/usr/lib/x86_64-linux-gnu" \
     --disable-sdl --disable-v4l2 --disable-opencore-amr --disable-speex \
     --disable-speexdsp --disable-l16 --disable-gsm --disable-speex-aec \
-    --disable-webrtc --disable-sound --disable-portaudio --disable-alsa \
-    --disable-resample --disable-ffmpeg --disable-vpx --disable-libtheora \
-    --disable-libsrtp --disable-openssl --disable-gnutls --disable-bearssl \
-    --disable-mbedtls --disable-quic --disable-httpd --disable-nginx
-make -j$(nproc) && make install
+    --disable-webrtc --enable-sound --disable-portaudio --disable-resample \
+    --disable-ffmpeg --disable-vpx --disable-libtheora --disable-libsrtp \
+    --disable-httpd --disable-nginx
+make dep && make -j$(nproc) && make install
 ```
 
+Con `--enable-sound` pjmedia usa el backend **ALSA** (`-lasound`); los headers
+de ALSA pueden extraerse sin sudo con `apt download libasound2-dev` +
+`dpkg-deb -x` a `~/.local/deps` (ver `.cargo/config.toml`).
 Luego compilar MicroSIP con `--features pjsip`.
 
 ---
@@ -137,12 +173,14 @@ Luego compilar MicroSIP con `--features pjsip`.
 | Qué probar | Comando | Qué debería ver |
 |---|---|---|
 | UI se abre | `cargo run --release` | Ventana "MicroSIP" con 3 pestañas |
-| Cuenta mock registrada | `cargo run --release` → pestaña "Cuentas" | `demo@example.com` · "Registrado" |
+| Cuentas | `cargo run --release` → pestaña "Cuentas" | Lista vacía o cuentas guardadas; botón «＋ Cuenta» |
 | Marcador numérico | `cargo run --release` → "Marcador" | Teclado 0-9, *, #, botón "Llamar" |
-| Bandeja del sistema | `cargo run --release` → cerrar ventana | Icono en bandeja; clic para mostrar |
+| Bandeja del sistema | `cargo run --release` → cerrar ventana | Icono SNI; clic para mostrar, menú «Salir» |
+| Cuenta persistida | Guardar una cuenta y reiniciar | La cuenta reaparece en «Cuentas» (`~/.config/microsip-linux/accounts.conf`, 600) |
+| Registro SIP real | Cuenta apuntando a un PBX y `RUST_LOG=info` | Log PJSUA: `Adding account`, `Registration sent` y `TX ... REGISTER` |
 | Compilar .deb | `cargo deb` | `target/debian/*.deb` |
 | PJSIP vinculado | `cargo build --features pjsip` | Compila sin errores de enlace |
-| PJSIP inicializa | `cargo build --features pjsip && ./target/debug/microsip-linux` | Log: `PJSUA state changed: NULL --> CREATED`, módulos SIP registrados |
+| PJSIP inicializa | `cargo build --features pjsip && ./target/debug/microsip-linux` | Log: `PJSUA state changed: NULL --> CREATED --> RUNNING`, módulos SIP registrados |
 
 Para probar sin servidor gráfico (entorno headless/CI):
 
@@ -150,15 +188,37 @@ Para probar sin servidor gráfico (entorno headless/CI):
 xvfb-run -a cargo run --release   # necesita Xvfb
 ```
 
+### Prueba end-to-end con PBX local (recomendada)
+
+El repo incluye un PBX SIP de prueba en Python (`tests/sip-lab/`, sin sudo,
+loopback) con una suite de 36 aserciones de protocolo:
+
+```bash
+cd tests/sip-lab
+python3 pbx.py                 # terminal 1: PBX en 127.0.0.1:5060
+python3 run_tests.py           # terminal 2: → "36 passed, 0 failed"
+cd ../..
+cargo build --features pjsip,test-hooks
+# registrar 1001 y marcar a 1002 (ver tests/sip-lab/README.md para el config)
+XDG_CONFIG_HOME=/tmp/ms-config MICROSIP_TEST_DIAL=sip:1002@127.0.0.1 \
+  RUST_LOG=info xvfb-run -a ./target/debug/microsip-linux
+```
+
+Evidencia obtenida (2026-11-26): registro `401 → digest → 200 OK`
+(`registration success, status=200`); llamada saliente `INVITE → 200 OK → ACK`
+con `Encoder/Decoder stream started` y `Conf connect 1↔0` (audio bidireccional
+ALSA); llamada entrante `180 Ringing → 200 OK` con audio conectado en ambos
+extremos. La feature `test-hooks` (auto-marcar/auto-contestar) no se incluye en
+el `.deb`.
+
 ---
 
 ## Roadmap (v1 → v1.1)
 
-1. Conectar comandos SIP (Dial/Answer/Hangup) desde la UI al backend real.
-2. Audio: integrar `pjmedia` con ALSA/PulseAudio para voz real.
-3. Cuentas persistentes (archivo de config) en vez de cuenta mock hardcodeada.
-4. Mejorar la gestión de memoria de `pj_str_t` (pool de pjsua en vez de
-   `CString::forget`).
+1. Probar llamada real contra un PBX/PBX local (registro + audio bidireccional).
+2. Seleccionar dispositivo de captura/reproducción en la UI.
+3. Transferencia de llamada, hold y mute.
+4. MWI/buzón de voz y llamadas perdidas.
 
 ---
 

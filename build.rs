@@ -1,16 +1,24 @@
 //! Script de build para enlazar contra pjproject (PJSIP) compilado en ~/.local.
 //!
-//! Intenta pkg-config primero; si falla, usa rutas hardcodeadas a ~/.local.
+//! Solo enlaza pjproject cuando la feature `pjsip` está activa
+//! (`CARGO_FEATURE_PJSIP`); sin ella el binario mock no necesita pjproject.
 
 fn main() {
     println!("cargo:rerun-if-changed=build.rs");
+    println!("cargo:rerun-if-env-changed=CARGO_FEATURE_PJSIP");
+
+    let pjsip_enabled = std::env::var("CARGO_FEATURE_PJSIP").is_ok();
+    if !pjsip_enabled {
+        println!("cargo:warning=backend mock (sin pjproject)");
+        return;
+    }
 
     let local_lib = "/home/jesus/.local/lib";
     let local_include = "/home/jesus/.local/include";
 
-    // Librerías estáticas de pjproject (en orden de dependencia)
-    // Se envuelven en --start-group/--end-group para resolver
-    // referencias circulares entre libs estáticas de terceros (speex, gsm, etc.).
+    // Librerías estáticas de pjproject (en orden de dependencia).
+    // Se envuelven en --start-group/--end-group para resolver referencias
+    // circulares entre libs estáticas de terceros (speex, gsm, etc.).
     println!("cargo:rustc-link-arg=-Wl,--start-group");
     let libs = [
         "pjsua2-x86_64-unknown-linux-gnu",
@@ -36,23 +44,25 @@ fn main() {
         println!("cargo:rustc-link-lib=static={libname}");
     }
     println!("cargo:rustc-link-arg=-Wl,--end-group");
-    // Dependencias del sistema (dinámicas)
-    for syslib in ["ssl", "crypto", "uuid", "m", "rt", "pthread", "dl"] {
+
+    // Dependencias del sistema (dinámicas).
+    // `asound`: pjproject 2.15 se compiló con el backend ALSA de
+    // pjmedia-audiodev (Libs.private de libpjproject.pc termina en -lasound).
+    for syslib in [
+        "ssl", "crypto", "uuid", "m", "rt", "pthread", "dl", "asound",
+    ] {
         println!("cargo:rustc-link-lib=dylib={syslib}");
     }
     println!("cargo:rustc-link-lib=stdc++");
-    // Rutas de búsqueda (hardcodeadas; funcionan sin pkg-config)
     println!("cargo:rustc-link-search=native={local_lib}");
     println!("cargo:rerun-if-changed={local_lib}");
     println!("cargo:rerun-if-changed={local_include}");
 
-    // Intentar pkg-config para headers (informativo)
-    match pkg_config::Config::new().cargo_metadata(false).probe("libpjproject") {
-        Ok(_) => {
-            println!("cargo:warning=PJSIP backend enabled via pkg-config");
-        }
-        Err(_) => {
-            println!("cargo:warning=PJSIP backend enabled via hardcoded ~/.local paths");
-        }
+    match pkg_config::Config::new()
+        .cargo_metadata(false)
+        .probe("libpjproject")
+    {
+        Ok(_) => println!("cargo:warning=PJSIP backend enabled via pkg-config"),
+        Err(_) => println!("cargo:warning=PJSIP backend enabled via hardcoded ~/.local paths"),
     }
 }

@@ -1,1 +1,4 @@
 /target
+/tests/sip-lab/logs/
+/tests/sip-lab/evidencia/
+__pycache__/

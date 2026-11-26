@@ -10,24 +10,52 @@ repository = "https://github.com/gsusrafael/microsip-linux"
 # cargo-deb metadata for Debian/Ubuntu packaging
 [package.metadata.deb]
 maintainer = "Jesús Rafael Sánchez <jesusrafael@gmail.com>"
-depends = ["libgtk-4-0", "libayatana-appindicator3-1", "libdbusmenu-glib4", "libglib2.0-0"]
+# `$auto` = dpkg-shlibdeps sobre el binario → nombres REALES del host de build
+# (libgtk-4-1, libglib2.0-0t64, libssl3t64, libxdo3, libuuid1, libc6,
+# libstdc++6…) con su restricción de versión.
+# `libasound2t64`: backend ALSA de pjmedia (se enlaza en build.rs).
+# La bandeja usa ksni (StatusNotifierItem/D-Bus): NO necesita libayatana ni
+# libdbusmenu. pjproject se enlaza ESTÁTICO → sin dependencia de libpjproject.
+depends = ["$auto", "libasound2t64"]
+# pjproject no tiene backend PulseAudio nativo (solo ALSA/OSS/…) → la vía a
+# Pulse es el puente ALSA (libasound2-plugins, instalado en los desktop).
+recommends = ["libasound2-plugins"]
 section = "net"
 priority = "optional"
+# copyright con año (lintian: copyright-without-copyright-notice)
+copyright = "Copyright 2026 Jesús Rafael Sánchez <jesusrafael@gmail.com>"
+# changelog.Debian.gz en /usr/share/doc (lintian: no-changelog)
+changelog = "debian/changelog"
 # cargo-deb: habilitar feature pjsip al construir el .deb
 features = ["pjsip"]
+extended-description = """
+MicroSIP es un softphone SIP ligero y fiable portado a Linux. Escrito en Rust
+con interfaz GTK4 y bandeja del sistema, basado en la pila PJSIP (enlazada
+estáticamente en este binario).
+.
+Permite cuentas SIP, marcación, llamadas entrantes/salientes y minimización a
+la bandeja del sistema."""
 # files installed by cargo-deb (binary + desktop + icon)
+# OJO (cargo-deb): si `dest` no termina en "/" se toma como RUTA COMPLETA del
+# destino (no como directorio) → sin el nombre de fichero se creaba un fichero
+# llamado /usr/bin (y otro en /usr/share/applications), dejando el .deb
+# ininstalable. Por eso cada dest lleva su nombre de fichero.
 assets = [
-    { source = "/home/jesus/Workspace/microsip-linux/target/release/microsip-linux", dest = "usr/bin" },
-    { source = "/home/jesus/Workspace/microsip-linux/assets/microsip-linux.desktop", dest = "usr/share/applications" },
-    { source = "/home/jesus/Workspace/microsip-linux/assets/icon.svg", dest = "usr/share/icons/hicolor/scalable/apps/microsip-linux.svg" },
+    { source = "target/release/microsip-linux", dest = "usr/bin/microsip-linux", mode = "755" },
+    { source = "assets/microsip-linux.desktop", dest = "usr/share/applications/microsip-linux.desktop", mode = "644" },
+    { source = "assets/icon.svg", dest = "usr/share/icons/hicolor/scalable/apps/microsip-linux.svg", mode = "644" },
 ]
 
 [features]
 default = ["tray"]
 # Backend PJSIP real vía FFI (requiere pjproject compilado en ~/.local)
 pjsip = []
-# Bandeja del sistema (appindicator / KSNI). Requiere libayatana-appindicator3-dev en el host.
-tray = ["tray-icon"]
+# Hooks de prueba E2E (auto-dial/auto-answer por variables de entorno).
+# No se activan por defecto ni en el .deb.
+test-hooks = []
+# Bandeja del sistema (StatusNotifierItem vía D-Bus; sin GTK3 para no chocar
+# con la GTK4 de la aplicación).
+tray = ["ksni"]
 no-tray = []
 
 [dependencies]
@@ -37,8 +65,8 @@ tokio = { version = "1", features = ["full"] }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 
-# Bandeja del sistema (opcional)
-tray-icon = { version = "0.5", optional = true }
+# Bandeja del sistema (StatusNotifierItem/D-Bus, sin dependencias GTK)
+ksni = { version = "0.3", optional = true, features = ["blocking"] }
 
 [build-dependencies]
 pkg-config = "0.3"
