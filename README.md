@@ -207,7 +207,10 @@ Cada job:
 El job `release` descarga los tres y los adjunta a la release con
 `softprops/action-gh-release`.
 
-Para publicar:
+**v0.1.0 ya publicada:** <https://github.com/gsusrafael/microsip-linux/releases/tag/v0.1.0>
+(con los tres `.deb` adjuntos: `amd64`, `arm64`, `armhf`).
+
+Para publicar una versión nueva:
 
 ```bash
 git tag v0.1.0 && git push origin v0.1.0
