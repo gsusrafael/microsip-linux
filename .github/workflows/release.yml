@@ -60,19 +60,20 @@ jobs:
           set -euo pipefail
           sudo dpkg --add-architecture armhf
 
-          # Ubuntu noble NO sirve armhf desde archive/security (da 404 y
-          # `apt-get update` sale con 100): el armhf va por ports.ubuntu.com.
-          # Se restringen las fuentes existentes a amd64 y se añade ports/armhf.
-          for f in /etc/apt/sources.list /etc/apt/sources.list.d/*.list; do
-            [ -f "$f" ] || continue
-            sudo sed -i -E 's/^deb(\[[^]]*\])? /deb [arch=amd64] /' "$f"
-          done
-          for f in /etc/apt/sources.list.d/*.sources; do
-            [ -f "$f" ] || continue
-            grep -q '^Architectures:' "$f" \
-              || sudo sed -i 's/^Types:/Architectures: amd64\nTypes:/' "$f"
-          done
-          cat <<'LIST' | sudo tee /etc/apt/sources.list.d/armhf-ports.list >/dev/null
+          # NO parchear las fuentes del runner (tiene microsoft-prod.list y
+          # deb822): sed las rompe. Se apartan y se escribe una lista limpia.
+          sudo mkdir -p /tmp/apt-sources-backup
+          [ -f /etc/apt/sources.list ] \
+            && sudo mv /etc/apt/sources.list /tmp/apt-sources-backup/ || true
+          sudo find /etc/apt/sources.list.d -maxdepth 1 -type f \
+            -exec mv {} /tmp/apt-sources-backup/ \; || true
+
+          # Ubuntu noble no sirve armhf desde archive/security (404): va por
+          # ports.ubuntu.com. Fuentes separadas por arquitectura.
+          sudo tee /etc/apt/sources.list >/dev/null <<'LIST'
+          deb [arch=amd64] http://archive.ubuntu.com/ubuntu noble main universe restricted multiverse
+          deb [arch=amd64] http://archive.ubuntu.com/ubuntu noble-updates main universe restricted multiverse
+          deb [arch=amd64] http://security.ubuntu.com/ubuntu noble-security main universe restricted multiverse
           deb [arch=armhf] http://ports.ubuntu.com/ubuntu-ports noble main universe restricted multiverse
           deb [arch=armhf] http://ports.ubuntu.com/ubuntu-ports noble-updates main universe restricted multiverse
           deb [arch=armhf] http://ports.ubuntu.com/ubuntu-ports noble-security main universe restricted multiverse
