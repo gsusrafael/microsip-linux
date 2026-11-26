@@ -1,10 +1,9 @@
 # Prefijo local de dependencias de sistema (sin sudo).
 # Se obtuvo mediante `apt download` + `dpkg-deb -x` a ~/.local/deps:
-#   libayatana-appindicator3-dev, libxdo-dev
+#   libayatana-appindicator3-dev, libxdo-dev, libasound2-dev
+# Las rutas de pkg-config las añade build.rs (multi-arquitectura), así que aquí
+# solo queda la ruta de enlace para las .so del prefijo local.
 [target.x86_64-unknown-linux-gnu]
 rustflags = [
   "-L", "/home/jesus/.local/deps/usr/lib/x86_64-linux-gnu",
 ]
-
-[env]
-PKG_CONFIG_PATH = "/home/jesus/.local/deps/usr/lib/x86_64-linux-gnu/pkgconfig"

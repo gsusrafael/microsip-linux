@@ -1,0 +1,134 @@
+name: Release
+
+# Genera paquetes .deb para amd64, arm64 y armhf y los publica como release
+# cuando se pushea una etiqueta v*.
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  deb:
+    name: .deb ${{ matrix.arch }}
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # Nativo en el runner x86_64 de GitHub.
+          - arch: amd64
+            runner: ubuntu-24.04
+            rust_target: x86_64-unknown-linux-gnu
+            deb_arch: amd64
+            cross_host: ""
+          # Runner ARM64 nativo (gratis para repos públicos).
+          - arch: arm64
+            runner: ubuntu-24.04-arm
+            rust_target: aarch64-unknown-linux-gnu
+            deb_arch: arm64
+            cross_host: ""
+          # Cross-compilación ARMv7 (hard float) desde el runner x86_64.
+          - arch: armhf
+            runner: ubuntu-24.04
+            rust_target: armv7-unknown-linux-gnueabihf
+            deb_arch: armhf
+            cross_host: arm-linux-gnueabihf
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Rust (${{ matrix.rust_target }})
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.rust_target }}
+
+      - name: Dependencias del sistema
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            build-essential pkg-config curl ca-certificates \
+            libgtk-4-dev libadwaita-1-dev libglib2.0-dev \
+            libasound2-dev libssl-dev dpkg-dev
+
+      - name: Dependencias de cross (armhf)
+        if: matrix.cross_host != ''
+        run: |
+          sudo dpkg --add-architecture armhf
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            gcc-arm-linux-gnueabihf g++-arm-linux-gnueabihf \
+            libgtk-4-dev:armhf libadwaita-1-dev:armhf libglib2.0-dev:armhf \
+            libasound2-dev:armhf libssl-dev:armhf
+
+      - name: Caché de pjproject
+        uses: actions/cache@v4
+        with:
+          path: ~/.local
+          key: pjproject-${{ matrix.deb_arch }}-2.15-v1
+
+      - name: Compilar pjproject
+        env:
+          CROSS_HOST: ${{ matrix.cross_host }}
+        run: |
+          chmod +x scripts/build-pjproject.sh scripts/verify-deb.sh
+          ./scripts/build-pjproject.sh
+
+      - name: Instalar cargo-deb
+        run: cargo install cargo-deb --locked
+
+      - name: Compilar y empaquetar .deb
+        env:
+          # Enlace del binario final para el target cruzado (inofensivo en nativo).
+          CARGO_TARGET_ARMV7_UNKNOWN_LINUX_GNUEABIHF_LINKER: arm-linux-gnueabihf-gcc
+          # pkg-config no cruza de host por defecto (inofensivo en nativo).
+          PKG_CONFIG_ALLOW_CROSS: "1"
+        run: |
+          # En cross hay que apuntar pkg-config a los .pc del target; en nativo
+          # NO se toca PKG_CONFIG_LIBDIR (ponerlo vacío borraría las rutas del
+          # sistema y rompería el sondeo de gtk4/glib/alsa).
+          if [ -n "${{ matrix.cross_host }}" ]; then
+            export PKG_CONFIG_LIBDIR="/usr/lib/${{ matrix.cross_host }}/pkgconfig:/usr/share/pkgconfig"
+          fi
+          cargo deb --target "${{ matrix.rust_target }}"
+
+      - name: Verificar el .deb
+        run: |
+          set -euo pipefail
+          # cargo-deb lo escribe en target/debian o target/<triple>/debian
+          deb="$(find target -name '*.deb' -path '*debian*' | head -1)"
+          if [ -z "$deb" ]; then echo "FAIL: no se generó ningún .deb"; exit 1; fi
+          scripts/verify-deb.sh "$deb" "${{ matrix.deb_arch }}"
+          mkdir -p dist
+          cp "$deb" dist/
+
+      - name: Subir artefacto
+        uses: actions/upload-artifact@v4
+        with:
+          name: microsip-linux-${{ matrix.deb_arch }}
+          path: dist/*.deb
+          if-no-files-found: error
+
+  release:
+    name: Publicar release
+    needs: deb
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Descargar .deb
+        uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+
+      - name: Listar paquetes
+        run: ls -lh dist/
+
+      - name: Crear release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: dist/*.deb
+          generate_release_notes: true

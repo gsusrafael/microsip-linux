@@ -180,6 +180,41 @@ no tiene backend Pulse nativo). **pjproject se enlaza estático** en el binario
 
 ---
 
+## Release automático (.deb multi-arquitectura)
+
+El workflow `.github/workflows/release.yml` genera paquetes para **tres
+arquitecturas** y los publica como release al pushear una etiqueta `v*`
+(también admite `workflow_dispatch` para probar sin etiqueta):
+
+| Arch | Runner | Cómo se construye |
+|---|---|---|
+| `amd64` | `ubuntu-24.04` | nativo |
+| `arm64` | `ubuntu-24.04-arm` | nativo (runner ARM64 de GitHub) |
+| `armhf` | `ubuntu-24.04` | cross con `gcc-arm-linux-gnueabihf` + multiarch `armhf` |
+
+Cada job:
+
+1. instala GTK4/Adwaita/ALSA dev (y los `:armhf` en el job cruzado);
+2. compila **pjproject 2.15** para la arquitectura objetivo
+   (`scripts/build-pjproject.sh`, cacheado en `~/.local`);
+3. `cargo deb --target <triple>` — `build.rs` obtiene las librerías de
+   `libpjproject.pc` vía pkg-config, así que sirve para cualquier arquitectura;
+4. **verifica** el resultado con `scripts/verify-deb.sh`: `Architecture`,
+   `Machine` del ELF, `Depends` resueltos por `$auto` (GTK4/Adwaita/ALSA) y
+   que **no** dependa de `libpjproject` (enlace estático);
+5. sube el `.deb` como artefacto.
+
+El job `release` descarga los tres y los adjunta a la release con
+`softprops/action-gh-release`.
+
+Para publicar:
+
+```bash
+git tag v0.1.0 && git push origin v0.1.0
+```
+
+---
+
 ## Compilar pjproject (PJSIP) para Linux
 
 Si quieres trabajar el backend FFI real, pjproject 2.15 ya está compilado en
