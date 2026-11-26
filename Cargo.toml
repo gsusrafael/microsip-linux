@@ -71,6 +71,9 @@ libadwaita = "0.4"
 
 [build-dependencies]
 pkg-config = "0.3"
+# Los bindings FFI se generan en el build para la arquitectura del target:
+# un .rs congelado en x86_64 no sirve para armhf (tamaños/distintos).
+bindgen = "0.73"
 
 [workspace]
 

@@ -26,11 +26,11 @@ mod bindings {
     #![allow(non_camel_case_types)]
     #![allow(non_snake_case)]
     #![allow(clippy::all)]
-    include!("pjsip_bindings.rs");
+    include!(concat!(env!("OUT_DIR"), "/pjsip_bindings.rs"));
 }
 
 use bindings::{
-    pj_status_t, pj_str_t, pjsip_cred_info, pjsip_status_code, pjsip_transport_type_e,
+    pj_ssize_t, pj_status_t, pj_str_t, pjsip_cred_info, pjsip_status_code, pjsip_transport_type_e,
     pjsua_acc_config, pjsua_acc_id, pjsua_acc_info, pjsua_call_id, pjsua_call_info,
     pjsua_call_setting, pjsua_config, pjsua_logging_config, pjsua_media_config, pjsua_msg_data,
     pjsua_transport_config, pjsua_transport_id,
@@ -524,7 +524,7 @@ impl PjsipBackend {
 fn pj_str_from_cstring(c: &CString) -> pj_str_t {
     pj_str_t {
         ptr: c.as_ptr() as *mut c_char,
-        slen: c.as_bytes().len() as i64,
+        slen: c.as_bytes().len() as pj_ssize_t,
     }
 }
 

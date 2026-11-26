@@ -23,6 +23,9 @@ fn main() {
 
     augment_pkg_config_path();
 
+    // Generar los bindings para ESTA arquitectura (x86_64/arm64/armhf).
+    generate_bindings();
+
     // `statik(true)` => pkg-config --static, que incluye Libs.private
     // (-lasound, -lssl, -lcrypto, -luuid, …).
     let lib = match pkg_config::Config::new()
@@ -100,4 +103,50 @@ fn augment_pkg_config_path() {
     // pkg-config ignora los directorios que no existen, así que es seguro
     // incluir rutas que solo existen en la máquina de desarrollo.
     std::env::set_var("PKG_CONFIG_PATH", dirs.join(":"));
+}
+
+/// Genera `pjsip_bindings.rs` en OUT_DIR apuntando a los headers de pjproject
+/// de la arquitectura del target. bindgen con `--target` calcula tamaños y
+/// desplazamientos correctos para 32 y 64 bits.
+fn generate_bindings() {
+    use std::path::PathBuf;
+
+    let home = std::env::var("HOME").unwrap_or_default();
+    let target = std::env::var("TARGET").unwrap_or_default();
+
+    // Triple Debian de los headers del sistema (multiarch).
+    let debian = if target.starts_with("x86_64") {
+        "x86_64-linux-gnu"
+    } else if target.starts_with("aarch64") {
+        "aarch64-linux-gnu"
+    } else if target.starts_with("armv7") {
+        "arm-linux-gnueabihf"
+    } else {
+        ""
+    };
+
+    let mut builder = bindgen::Builder::default()
+        .header("src/sip/pjsip_wrapper.h")
+        .clang_arg(format!("-I{home}/.local/include"))
+        .clang_arg(format!("-I/usr/include/{debian}"))
+        .clang_arg("-DPJ_AUTOCONF=1")
+        .clang_arg(format!("--target={target}"));
+    for pattern in [
+        "pj_.*", "pjsip_.*", "pjsua_.*", "PJ_.*", "PJSIP_.*", "PJSUA_.*",
+    ] {
+        if pattern.starts_with("PJ") {
+            builder = builder.allowlist_var(pattern);
+        } else {
+            builder = builder.allowlist_type(pattern).allowlist_function(pattern);
+        }
+    }
+
+    let out_dir = PathBuf::from(std::env::var("OUT_DIR").expect("OUT_DIR no definido"));
+    builder
+        .generate()
+        .expect("bindgen no pudo generar los bindings de PJSUA")
+        .write_to_file(out_dir.join("pjsip_bindings.rs"))
+        .expect("no se pudo escribir pjsip_bindings.rs");
+
+    println!("cargo:rerun-if-changed=src/sip/pjsip_wrapper.h");
 }
