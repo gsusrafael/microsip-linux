@@ -1,0 +1,19 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 256">
+  <!-- MicroSIP icon: teléfono (handset) sobre círculo, estilo Adaptive -->
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%" stop-color="#1f6feb"/>
+      <stop offset="100%" stop-color="#155cc8"/>
+    </linearGradient>
+  </defs>
+  <circle cx="128" cy="128" r="112" fill="url(#bg)"/>
+  <circle cx="128" cy="128" r="112" fill="none" stroke="#ffffff" stroke-width="4" opacity="0.3"/>
+  <!-- Handset -->
+  <g fill="none" stroke="#ffffff" stroke-width="14" stroke-linecap="round" stroke-linejoin="round">
+    <path d="M70 128 c0 -22 26 -34 44 -34 l30 0 c18 0 30 12 30 30 l0 40 c0 18 -12 30 -30 30 l-30 0 c-18 0 -44 -12 -44 -34 z"/>
+    <path d="M114 94 c0 -8 6 -14 14 -14 l0 28 c-8 0 -14 -6 -14 -14 z"/>
+    <path d="M142 162 c0 -8 6 -14 14 -14 l0 -28 c-8 0 -14 6 -14 14 z"/>
+  </g>
+  <circle cx="128" cy="128" r="6" fill="#ffffff"/>
+</svg>

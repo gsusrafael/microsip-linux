@@ -1,0 +1,7 @@
+microsip-linux (0.1.0-1) unstable; urgency=medium
+
+  * Initial release: MicroSIP port to Linux.
+    Interfaz GTK4, cuentas SIP, marcador, llamadas, bandeja del sistema y
+    backend SIP (mock listo; PJSIP vía FFI pendiente de integrar).
+
+ -- Jesús Rafael Sánchez <jesusrafael@gmail.com>  Wed, 25 Nov 2026 12:00:00 +0000

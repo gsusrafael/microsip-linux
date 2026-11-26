@@ -1,0 +1,10 @@
+# Prefijo local de dependencias de sistema (sin sudo).
+# Se obtuvo mediante `apt download` + `dpkg-deb -x` a ~/.local/deps:
+#   libayatana-appindicator3-dev, libxdo-dev
+[target.x86_64-unknown-linux-gnu]
+rustflags = [
+  "-L", "/home/jesus/.local/deps/usr/lib/x86_64-linux-gnu",
+]
+
+[env]
+PKG_CONFIG_PATH = "/home/jesus/.local/deps/usr/lib/x86_64-linux-gnu/pkgconfig"

@@ -1,0 +1,11 @@
+[Desktop Entry]
+Name=MicroSIP
+GenericName=SIP Softphone
+Comment=MicroSIP port to Linux — Rust + GTK4 SIP softphone con bandeja del sistema (basado en PJSIP)
+Exec=microsip-linux
+Icon=microsip-linux
+Terminal=false
+Type=Application
+Categories=Network;InstantMessaging;VideoConference;
+StartupNotify=true
+Keywords=sip;voip;softphone;phone;call;

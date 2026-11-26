@@ -1,0 +1,15 @@
+Source: microsip-linux
+Section: net
+Priority: optional
+Maintainer: Jesús Rafael Sánchez <jesusrafael@gmail.com>
+Build-Depends: debhelper (>= 9), rustc (>= 1.70), cargo, libgtk-4-dev, libayatana-appindicator3-dev, libglib2.0-dev, pkg-config
+Standards-Version: 4.6.2
+
+Package: microsip-linux
+Architecture: amd64
+Depends: ${shlibs:Depends}, ${misc:Depends}, libgtk-4-0, libayatana-appindicator3-1, libglib2.0-0
+Description: MicroSIP port to Linux — Rust + GTK4 SIP softphone
+ MicroSIP is a lightweight, reliable SIP softphone ported to Linux. Written in
+ Rust with a GTK4 interface and system tray support, based on the PJSIP stack.
+ Permite cuentas SIP, marcación, llamadas entrantes/salientes y minimización a
+ la bandeja del sistema.
