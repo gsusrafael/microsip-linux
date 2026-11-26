@@ -1,18 +1,12 @@
 //! Backend SIP real: bindings FFI contra PJSUA (PJSIP, C API).
 //!
-//! Está detrás de la feature `pjsip`. Requiere pjproject compilado (ver
-//! `build.rs` y ~/.local). Compilar pjproject:
+//! Los structs C vienen de bindgen (`pjsip_bindings.rs`, generado desde
+//! `~/.local/include/pjsua-lib/pjsua.h`); las funciones externas se declaran
+//! a mano porque bindgen no expande la macro `PJ_DECL`.
 //!
-//!   ./configure --prefix=$HOME/.local --disable-shared --enable-static \
-//!       --disable-sdl --disable-v4l2 --disable-opencore-amr --disable-speex \
-//!       --disable-speexdsp --disable-l16 --disable-gsm --disable-speex-aec \
-//!       --disable-webrtc --disable-sound --disable-portaudio --disable-alsa \
-//!       --disable-resample --disable-ffmpeg --disable-vpx --disable-libtheora \
-//!       --disable-libsrtp --disable-openssl --disable-gnutls --disable-bearssl \
-//!       --disable-mbedtls --disable-quic --disable-httpd --disable-nginx
-//!   make -j$(nproc) && make install
+//! Requiere pjproject compilado en `~/.local` (ver build.rs).
 //!
-//! Luego: cargo build --features pjsip
+//! Compilar: cargo build --features pjsip
 
 use std::collections::HashMap;
 use std::os::raw::{c_char, c_int, c_void};
@@ -23,110 +17,69 @@ use super::{
     AccountId, CallId, CallState, RegistrationState, SipBackend, SipCommand, SipEvent, SipResult,
 };
 
-// ---------------------------------------------------------------------------
-// Tipos FFI de pjsua (C API)
-// ---------------------------------------------------------------------------
-
-/// pjsua_acc_id es un int.
-type PjsuaAccId = c_int;
-/// pjsua_call_id es un int.
-type PjsuaCallId = c_int;
-/// pj_status_t es un int (0 = éxito).
-type PjStatus = c_int;
-
-const PJ_SUCCESS: PjStatus = 0;
-
-/// pj_str_t: { char *ptr; int slen; }
-#[repr(C)]
-#[derive(Debug, Clone, Copy)]
-pub struct PjStr {
-    pub ptr: *mut c_char,
-    pub slen: c_int,
+// Bindings generados por bindgen (structs con layout exacto de pjproject 2.15).
+mod bindings {
+    #![allow(unused_imports)]
+    #![allow(non_upper_case_globals)]
+    #![allow(non_camel_case_types)]
+    #![allow(non_snake_case)]
+    #![allow(clippy::all)]
+    include!("pjsip_bindings.rs");
 }
 
-/// pjsua_callbacks (reducido a los callbacks que usamos).
-#[repr(C)]
-pub struct PjsuaCallbacks {
-    pub on_reg_state: Option<unsafe extern "C" fn(PjsuaAccId)>,
-    pub on_call_state: Option<unsafe extern "C" fn(PjsuaCallId, *mut c_void)>,
-    pub on_incoming_call: Option<unsafe extern "C" fn(PjsuaAccId, PjsuaCallId, *mut c_void)>,
-}
-
-/// pjsua_config (campos mínimos, el resto se deja a cero / default).
-#[repr(C)]
-pub struct PjsuaConfig {
-    pub cb: PjsuaCallbacks,
-    _pad: [u8; 256], // espacio para los demás campos (versioned, etc.)
-}
-
-/// pjsua_logging_config (mínimo).
-#[repr(C)]
-pub struct PjsuaLoggingConfig {
-    _pad: [u8; 128],
-}
-
-/// pjsua_media_config (mínimo).
-#[repr(C)]
-pub struct PjsuaMediaConfig {
-    _pad: [u8; 128],
-}
-
-/// pjsua_acc_config (campos mínimos).
-#[repr(C)]
-pub struct PjsuaAccConfig {
-    pub id_uri: PjStr,
-    pub reg_uri: PjStr,
-    _pad: [u8; 512],
-}
+use bindings::{
+    pj_status_t, pj_str_t, pjsua_acc_config, pjsua_acc_id, pjsua_call_id, pjsua_call_setting,
+    pjsua_config, pjsua_logging_config, pjsua_media_config,
+};
 
 // ---------------------------------------------------------------------------
-// Declaraciones FFI (extern "C")
+// Declaraciones FFI (extern "C") — bindgen no expande PJ_DECL
 // ---------------------------------------------------------------------------
 
 extern "C" {
-    pub fn pjsua_create() -> PjStatus;
-    pub fn pjsua_destroy() -> PjStatus;
-    pub fn pjsua_init(
-        cfg: *const PjsuaConfig,
-        log_cfg: *const PjsuaLoggingConfig,
-        media_cfg: *const PjsuaMediaConfig,
-    ) -> PjStatus;
-    pub fn pjsua_add_acc(
-        acc_cfg: *const PjsuaAccConfig,
-        set_default: i32,
-        acc_id: *mut PjsuaAccId,
-    ) -> PjStatus;
-    pub fn pjsua_call_make_call(
-        acc_id: PjsuaAccId,
-        dst_uri: *const PjStr,
-        opt: *const c_void,
+    fn pjsua_create() -> pj_status_t;
+    fn pjsua_init(
+        ua_cfg: *const pjsua_config,
+        log_cfg: *const pjsua_logging_config,
+        media_cfg: *const pjsua_media_config,
+    ) -> pj_status_t;
+    fn pjsua_destroy() -> pj_status_t;
+    fn pjsua_config_default(cfg: *mut pjsua_config);
+    fn pjsua_logging_config_default(cfg: *mut pjsua_logging_config);
+    fn pjsua_media_config_default(cfg: *mut pjsua_media_config);
+    fn pjsua_acc_config_default(cfg: *mut pjsua_acc_config);
+    fn pjsua_acc_add(
+        acc_cfg: *const pjsua_acc_config,
+        set_default: pj_status_t,
+        p_acc_id: *mut pjsua_acc_id,
+    ) -> pj_status_t;
+    fn pjsua_call_make_call(
+        acc_id: pjsua_acc_id,
+        dst_uri: *const pj_str_t,
+        opt: *const pjsua_call_setting,
         user_data: *mut c_void,
-        call_id: *mut PjsuaCallId,
-    ) -> PjStatus;
-    pub fn pjsua_call_answer(call_id: PjsuaCallId, code: c_int, param: *const c_void) -> PjStatus;
-    pub fn pjsua_call_hangup_all() -> PjStatus;
-    pub fn pjsua_call_hangup(call_id: PjsuaCallId, code: c_int, user_data: *mut c_void) -> PjStatus;
+        p_call_id: *mut pjsua_call_id,
+    ) -> pj_status_t;
 }
+
+// pj_status_t es int; PJ_SUCCESS = 0.
+const PJ_SUCCESS: i32 = 0;
 
 // ---------------------------------------------------------------------------
 // Helpers para pj_str_t
 // ---------------------------------------------------------------------------
 
-fn c_string(s: &str) -> *mut c_char {
-    // CString no se puede usar directamente porque pj_str_t no toma ownership;
-    // el caller debe mantener la memoria viva mientras pjsua la use.
-    // Para simplicidad, usamos una asignación estática (FIXME: fugas de memoria
-    // en long-running; aceptable para v1).
+/// Crea un pj_str_t. La memoria vive mientras el CString no se libera;
+/// para pjsua (que copia los strings al init/add_acc) es aceptable en v1.
+fn pj_str(s: &str) -> pj_str_t {
     let c = std::ffi::CString::new(s).unwrap();
-    c.into_raw()
-}
-
-fn pj_str(s: &str) -> PjStr {
-    let ptr = c_string(s);
-    PjStr {
-        ptr,
-        slen: s.len() as c_int,
-    }
+    let ptr = c.as_ptr() as *mut c_char;
+    let len = s.len() as i64;
+    // Conservar el CString para no liberarlo (pjsua puede leerlo después).
+    // En v1 esto es una fuga intencional por simplicidad; en producción se
+    // usaría un pool de pjsua o un Vec<*mut c_char> con ownership.
+    std::mem::forget(c);
+    pj_str_t { ptr, slen: len }
 }
 
 // ---------------------------------------------------------------------------
@@ -135,20 +88,20 @@ fn pj_str(s: &str) -> PjStr {
 
 static EVENT_TX: Mutex<Option<mpsc::UnboundedSender<SipEvent>>> = Mutex::new(None);
 
-// Callbacks estáticos (pjsua llama a estos punteros C)
-extern "C" fn cb_on_reg_state(acc_id: PjsuaAccId) {
+// Callbacks estáticos (pjsua llama a estos punteros C).
+extern "C" fn cb_on_reg_state(acc_id: pjsua_acc_id) {
     tracing::info!(target: "sip::pjsip", "registro cuenta {acc_id} cambió");
     if let Some(guard) = EVENT_TX.lock().ok() {
         if let Some(tx) = guard.as_ref() {
             let _ = tx.send(SipEvent::RegistrationChanged {
                 account: AccountId(format!("acc-{acc_id}")),
-                state: RegistrationState::Ok, // TODO: leer estado real de pjsua
+                state: RegistrationState::Ok, // TODO: consultar pjsua_acc_get_info
             });
         }
     }
 }
 
-extern "C" fn cb_on_call_state(call_id: PjsuaCallId, _event: *mut c_void) {
+extern "C" fn cb_on_call_state(call_id: pjsua_call_id, _event: *mut bindings::pjsip_event) {
     tracing::info!(target: "sip::pjsip", "llamada {call_id} cambió de estado");
     if let Some(guard) = EVENT_TX.lock().ok() {
         if let Some(tx) = guard.as_ref() {
@@ -160,7 +113,11 @@ extern "C" fn cb_on_call_state(call_id: PjsuaCallId, _event: *mut c_void) {
     }
 }
 
-extern "C" fn cb_on_incoming_call(acc_id: PjsuaAccId, call_id: PjsuaCallId, _rdata: *mut c_void) {
+extern "C" fn cb_on_incoming_call(
+    acc_id: pjsua_acc_id,
+    call_id: pjsua_call_id,
+    _rdata: *mut bindings::pjsip_rx_data,
+) {
     tracing::info!(target: "sip::pjsip", "llamada entrante {call_id} en cuenta {acc_id}");
     if let Some(guard) = EVENT_TX.lock().ok() {
         if let Some(tx) = guard.as_ref() {
@@ -180,8 +137,8 @@ extern "C" fn cb_on_incoming_call(acc_id: PjsuaAccId, call_id: PjsuaCallId, _rda
 /// Backend SIP basado en PJSUA (PJSIP).
 pub struct PjsipBackend {
     initialized: bool,
-    accounts: HashMap<AccountId, PjsuaAccId>,
-    calls: HashMap<CallId, PjsuaCallId>,
+    accounts: HashMap<AccountId, pjsua_acc_id>,
+    calls: HashMap<CallId, pjsua_call_id>,
     event_tx: mpsc::UnboundedSender<SipEvent>,
     event_rx: mpsc::UnboundedReceiver<SipEvent>,
     next_call: u64,
@@ -209,6 +166,12 @@ impl PjsipBackend {
     }
 }
 
+impl Default for PjsipBackend {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl SipBackend for PjsipBackend {
     fn init(&mut self) -> Result<(), String> {
         unsafe {
@@ -217,16 +180,23 @@ impl SipBackend for PjsipBackend {
                 return Err(format!("pjsua_create falló: {st}"));
             }
 
-            let cfg = PjsuaConfig {
-                cb: PjsuaCallbacks {
-                    on_reg_state: Some(cb_on_reg_state),
-                    on_call_state: Some(cb_on_call_state),
-                    on_incoming_call: Some(cb_on_incoming_call),
-                },
-                _pad: [0; 256],
-            };
-            let log_cfg = PjsuaLoggingConfig { _pad: [0; 128] };
-            let media_cfg = PjsuaMediaConfig { _pad: [0; 128] };
+            // Configurar con valores por defecto de pjproject (layout exacto).
+            let mut cfg: pjsua_config = std::mem::zeroed();
+            pjsua_config_default(&mut cfg as *mut _);
+            cfg.thread_cnt = 0; // sin worker threads, usaremos poll si hace falta
+            cfg.max_calls = 8;
+
+            // Callbacks de la aplicación.
+            cfg.cb.on_reg_state = Some(cb_on_reg_state);
+            cfg.cb.on_call_state = Some(cb_on_call_state);
+            cfg.cb.on_incoming_call = Some(cb_on_incoming_call);
+
+            let mut log_cfg: pjsua_logging_config = std::mem::zeroed();
+            pjsua_logging_config_default(&mut log_cfg as *mut _);
+            log_cfg.console_level = 4;
+
+            let mut media_cfg: pjsua_media_config = std::mem::zeroed();
+            pjsua_media_config_default(&mut media_cfg as *mut _);
 
             let st = pjsua_init(&cfg as *const _, &log_cfg as *const _, &media_cfg as *const _);
             if st != PJ_SUCCESS {
@@ -240,18 +210,15 @@ impl SipBackend for PjsipBackend {
     }
 
     fn event_stream(&mut self) -> mpsc::UnboundedReceiver<SipEvent> {
-        // UnboundedReceiver no es Clone: se transfiere y se deja uno nuevo.
         std::mem::replace(&mut self.event_rx, mpsc::unbounded_channel().1)
     }
 
     fn send_command(&self, _cmd: SipCommand) {
-        // Los comandos se ejecutan directamente en los métodos de comando públicos
-        // (ver abajo). Este trait method se deja para compatibilidad.
         let _ = _cmd;
     }
 
     fn registration_state(&self, _id: &AccountId) -> RegistrationState {
-        RegistrationState::Unknown // TODO: consultar pjsua_acc_get_info
+        RegistrationState::Unknown // TODO: pjsua_acc_get_info
     }
 
     fn calls(&self) -> Vec<(CallId, CallState, String)> {
@@ -263,7 +230,7 @@ impl SipBackend for PjsipBackend {
 }
 
 impl PjsipBackend {
-    /// Configura una cuenta SIP en PJSUA.
+    /// Configura una cuenta SIP en PJSUA (con valores por defecto de pjproject).
     pub fn configure_account(&mut self, id: AccountId, username: &str, domain: &str) -> SipResult {
         if !self.initialized {
             return SipResult::Error {
@@ -276,17 +243,17 @@ impl PjsipBackend {
         let reg_uri = format!("sip:{domain}");
 
         unsafe {
-            let mut acc_cfg = PjsuaAccConfig {
-                id_uri: pj_str(&id_uri),
-                reg_uri: pj_str(&reg_uri),
-                _pad: [0; 512],
-            };
-            let mut acc_id: PjsuaAccId = 0;
-            let st = pjsua_add_acc(&mut acc_cfg as *mut _, 1, &mut acc_id as *mut _);
+            let mut acc_cfg: pjsua_acc_config = std::mem::zeroed();
+            pjsua_acc_config_default(&mut acc_cfg as *mut _);
+            acc_cfg.id = pj_str(&id_uri);
+            acc_cfg.reg_uri = pj_str(&reg_uri);
+
+            let mut acc_id: pjsua_acc_id = 0;
+            let st = pjsua_acc_add(&acc_cfg as *const _, 1, &mut acc_id as *mut _);
             if st != PJ_SUCCESS {
                 return SipResult::Error {
                     code: st as u16,
-                    message: format!("pjsua_add_acc falló: {st}"),
+                    message: format!("pjsua_acc_add falló: {st}"),
                 };
             }
             self.accounts.insert(id.clone(), acc_id);
@@ -297,7 +264,7 @@ impl PjsipBackend {
 
     /// Realiza una llamada SIP.
     pub fn dial(&mut self, account: AccountId, to: &str) -> SipResult {
-        let _acc_id = match self.accounts.get(&account) {
+        let acc_id = match self.accounts.get(&account) {
             Some(a) => *a,
             None => {
                 return SipResult::Error {
@@ -309,12 +276,12 @@ impl PjsipBackend {
 
         let dst_uri = pj_str(to);
         let call_id = self.next_call_id();
-        let mut pjsua_call_id: PjsuaCallId = 0;
+        let mut pjsua_call_id: pjsua_call_id = 0;
 
         unsafe {
             let st = pjsua_call_make_call(
-                _acc_id,
-                &dst_uri as *const PjStr,
+                acc_id,
+                &dst_uri as *const pj_str_t,
                 std::ptr::null(),
                 std::ptr::null_mut(),
                 &mut pjsua_call_id as *mut _,
@@ -331,19 +298,13 @@ impl PjsipBackend {
         SipResult::Ok
     }
 
-    /// Contesta una llamada entrante.
+    /// Contesta una llamada entrante (TODO: pjsua_call_answer).
     pub fn answer(&self, _call: CallId) -> SipResult {
-        SipResult::Ok // TODO: pjsua_call_answer con código 200
+        SipResult::Ok
     }
 
-    /// Colgar una llamada.
+    /// Colgar una llamada (TODO: pjsua_call_hangup).
     pub fn hangup(&self, _call: CallId) -> SipResult {
-        SipResult::Ok // TODO: pjsua_call_hangup
-    }
-}
-
-impl Default for PjsipBackend {
-    fn default() -> Self {
-        Self::new()
+        SipResult::Ok
     }
 }
