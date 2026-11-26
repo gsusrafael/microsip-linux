@@ -67,6 +67,7 @@ tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 
 # Bandeja del sistema (StatusNotifierItem/D-Bus, sin dependencias GTK)
 ksni = { version = "0.3", optional = true, features = ["blocking"] }
+libadwaita = "0.4"
 
 [build-dependencies]
 pkg-config = "0.3"

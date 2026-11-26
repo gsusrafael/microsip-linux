@@ -48,9 +48,11 @@ microsip-linux/
 ## Requisitos del sistema
 
 ### Para ejecutar (runtime)
-- `libgtk-4-1` (GTK4) — la bandeja usa **ksni** (StatusNotifierItem sobre
-  D-Bus) y **no** necesita GTK3 ni libayatana-appindicator. El escritorio debe
-  alojar un StatusNotifierItem (KDE lo trae; GNOME requiere la extensión
+- `libgtk-4-1` (GTK4) y `libadwaita-1-0` (paleta GTK4 moderna: `accent_bg_color`,
+  esquema oscuro/claro vía `AdwStyleManager`) — la bandeja usa **ksni**
+  (StatusNotifierItem sobre D-Bus) y **no** necesita GTK3 ni
+  libayatana-appindicator. El escritorio debe alojar un StatusNotifierItem
+  (KDE lo trae; GNOME requiere la extensión
   *AppIndicator and KStatusNotifierItem support*).
 - `libglib2.0-0t64`, `libssl3t64`, `libxdo3`, `libuuid1`, `libgdk-pixbuf-2.0-0`,
   `libpango-1.0-0` (enlaces directos del binario)
@@ -104,6 +106,42 @@ cargo build --release --features pjsip
 > pjproject 2.15) y las funciones externas se declaran a mano. `pjsua_init`
 > ejecuta correctamente: PJSUA pasa a `CREATED` y registra todos los módulos
 > SIP. El mock sigue siendo el backend por defecto (sin feature `pjsip`).
+
+### Tema y esquema de color (GTK3 ↔ GTK4)
+
+La app **no impone CSS propio**: usa las clases estándar de GTK4
+(`suggested-action`, `destructive-action`, `title-1`, `dim-label`…).
+
+Dos problemas reales que tenía una app GTK4 «pura» en un escritorio GTK3:
+
+1. **Oscuro/claro.** GTK3 lo lee de `~/.config/gtk-3.0/settings.ini`, pero
+   GTK4 **no lee ese fichero**, así que la app se quedaba en claro mientras el
+   escritorio estaba oscuro. Se resuelve leyendo
+   `org.gnome.desktop.interface color-scheme` y aplicándolo con
+   **`AdwStyleManager::color_scheme`** (libadwaita ignora
+   `gtk-application-prefer-dark-theme` y lo avisa como no soportado).
+
+2. **Color de acento.** Sin libadwaita, `accent_bg_color` queda sin definir y
+   los botones salen **grises**. Añadiendo `libadwaita` (0.4, emparejado con
+   gtk4 0.6) y llamando a `adw_init()` al arranque, los botones reciben su
+   acento.
+
+> **Por qué no se fuerza `gtk-theme-name`:** el `gtk-4.0/gtk.css` de
+> elementary **no define fondo para `button.suggested-action`** (0 reglas sin
+> `.linked`), así que al cargarlo GTK4 pierde su Adwaita embebido y la app sale
+> **entera en grises** (medido: 0 píxeles de acento frente a 11 247 sin
+> forzar). Por eso el stylesheet del escritorio se registra solo para
+> diagnóstico; se puede forzar con `MICROSIP_FORCE_THEME_NAME=1` para
+> experimentar.
+
+Log esperado con `RUST_LOG=info`:
+
+```
+theme: esquema del escritorio aplicado: tema="io.elementary.stylesheet.slate" oscuro=sí
+```
+
+Verificado en el escritorio real: fondo oscuro `#242424`, acento `#3584e4`,
+texto visible y sin avisos `Adwaita-WARNING`.
 
 ---
 

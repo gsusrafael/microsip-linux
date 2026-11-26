@@ -2,12 +2,12 @@ Source: microsip-linux
 Section: net
 Priority: optional
 Maintainer: Jesús Rafael Sánchez <jesusrafael@gmail.com>
-Build-Depends: debhelper (>= 9), rustc (>= 1.70), cargo, libgtk-4-dev, libglib2.0-dev, libasound2-dev, pkg-config
+Build-Depends: debhelper (>= 9), rustc (>= 1.70), cargo, libgtk-4-dev, libadwaita-1-dev, libglib2.0-dev, libasound2-dev, pkg-config
 Standards-Version: 4.6.2
 
 Package: microsip-linux
 Architecture: amd64
-Depends: ${shlibs:Depends}, ${misc:Depends}, libgtk-4-1, libglib2.0-0t64, libasound2t64
+Depends: ${shlibs:Depends}, ${misc:Depends}, libgtk-4-1, libadwaita-1-0, libglib2.0-0t64, libasound2t64
 Description: MicroSIP port to Linux — Rust + GTK4 SIP softphone
  MicroSIP is a lightweight, reliable SIP softphone ported to Linux. Written in
  Rust with a GTK4 interface and system tray (StatusNotifierItem/D-Bus),
