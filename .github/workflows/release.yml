@@ -57,7 +57,27 @@ jobs:
       - name: Dependencias de cross (armhf)
         if: matrix.cross_host != ''
         run: |
+          set -euo pipefail
           sudo dpkg --add-architecture armhf
+
+          # Ubuntu noble NO sirve armhf desde archive/security (da 404 y
+          # `apt-get update` sale con 100): el armhf va por ports.ubuntu.com.
+          # Se restringen las fuentes existentes a amd64 y se añade ports/armhf.
+          for f in /etc/apt/sources.list /etc/apt/sources.list.d/*.list; do
+            [ -f "$f" ] || continue
+            sudo sed -i -E 's/^deb(\[[^]]*\])? /deb [arch=amd64] /' "$f"
+          done
+          for f in /etc/apt/sources.list.d/*.sources; do
+            [ -f "$f" ] || continue
+            grep -q '^Architectures:' "$f" \
+              || sudo sed -i 's/^Types:/Architectures: amd64\nTypes:/' "$f"
+          done
+          cat <<'LIST' | sudo tee /etc/apt/sources.list.d/armhf-ports.list >/dev/null
+          deb [arch=armhf] http://ports.ubuntu.com/ubuntu-ports noble main universe restricted multiverse
+          deb [arch=armhf] http://ports.ubuntu.com/ubuntu-ports noble-updates main universe restricted multiverse
+          deb [arch=armhf] http://ports.ubuntu.com/ubuntu-ports noble-security main universe restricted multiverse
+          LIST
+
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends \
             gcc-arm-linux-gnueabihf g++-arm-linux-gnueabihf \

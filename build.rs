@@ -12,6 +12,8 @@
 fn main() {
     println!("cargo:rerun-if-changed=build.rs");
     println!("cargo:rerun-if-env-changed=CARGO_FEATURE_PJSIP");
+    println!("cargo:rerun-if-env-changed=PKG_CONFIG_PATH");
+    println!("cargo:rerun-if-env-changed=PKG_CONFIG_PATH_FOR_TARGET");
 
     // Sin la feature `pjsip` no se toca pjproject (build mock sin dependencias C).
     if std::env::var("CARGO_FEATURE_PJSIP").is_err() {
@@ -64,17 +66,36 @@ fn main() {
     println!("cargo:warning=PJSIP enlazado vía pkg-config (multi-arquitectura)");
 }
 
-/// Prepende los prefijos locales de desarrollo a `PKG_CONFIG_PATH`.
+/// Prepende los prefijos locales de desarrollo a las variables de búsqueda de
+/// pkg-config.
+///
+/// Ojo con `PKG_CONFIG_PATH_<target>`: el crate `pkg-config` le da **prioridad
+/// 1** sobre el `PKG_CONFIG_PATH` plano (prioridad 4), y `cargo deb --target`
+/// lo inyecta apuntando solo a `/usr/lib/<triple>/pkgconfig`. Sin ampliarlo
+/// aquí, `libpjproject` (que vive en `~/.local/lib/pkgconfig`) no se encuentra
+/// y el build de CI falla con "no se encontró libpjproject".
 fn augment_pkg_config_path() {
     let home = std::env::var("HOME").unwrap_or_default();
     let mut dirs = vec![
         format!("{home}/.local/lib/pkgconfig"),
         format!("{home}/.local/deps/usr/lib/x86_64-linux-gnu/pkgconfig"),
     ];
-    if let Ok(existing) = std::env::var("PKG_CONFIG_PATH") {
-        if !existing.is_empty() {
-            dirs.push(existing);
+    for var in ["PKG_CONFIG_PATH", "PKG_CONFIG_PATH_FOR_TARGET"] {
+        if let Ok(existing) = std::env::var(var) {
+            if !existing.is_empty() {
+                dirs.push(existing);
+            }
         }
+    }
+    // `TARGET` lo define cargo para los build scripts.
+    if let Ok(target) = std::env::var("TARGET") {
+        let var = format!("PKG_CONFIG_PATH_{target}");
+        if let Ok(existing) = std::env::var(&var) {
+            if !existing.is_empty() {
+                dirs.push(existing);
+            }
+        }
+        std::env::set_var(&var, dirs.join(":"));
     }
     // pkg-config ignora los directorios que no existen, así que es seguro
     // incluir rutas que solo existen en la máquina de desarrollo.
