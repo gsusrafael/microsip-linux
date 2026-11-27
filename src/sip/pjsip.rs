@@ -6,16 +6,18 @@
 //! Requiere pjproject compilado en `~/.local` (ver `build.rs`).
 //! Compilar: `cargo build --features pjsip`.
 
-use std::collections::HashMap;
-use std::ffi::CString;
-use std::os::raw::{c_char, c_void};
+use std::collections::{HashMap, HashSet};
+use std::ffi::{CStr, CString};
+use std::fs::File;
+use std::io::{Read, Seek, SeekFrom};
+use std::os::raw::{c_char, c_uint, c_void};
 use std::panic::{catch_unwind, AssertUnwindSafe};
 use std::sync::{Mutex, MutexGuard, OnceLock};
 use tokio::sync::mpsc;
 
 use super::{
-    AccountId, AccountInfo, CallId, CallInfo, CallState, RegistrationState, SipBackend, SipCommand,
-    SipEvent,
+    AccountId, AccountInfo, AudioDeviceInfo, CallId, CallInfo, CallState, RegistrationState,
+    SipBackend, SipCommand, SipEvent,
 };
 
 mod bindings {
@@ -30,10 +32,10 @@ mod bindings {
 }
 
 use bindings::{
-    pj_ssize_t, pj_status_t, pj_str_t, pjsip_cred_info, pjsip_status_code, pjsip_transport_type_e,
-    pjsua_acc_config, pjsua_acc_id, pjsua_acc_info, pjsua_call_id, pjsua_call_info,
-    pjsua_call_setting, pjsua_config, pjsua_logging_config, pjsua_media_config, pjsua_msg_data,
-    pjsua_transport_config, pjsua_transport_id,
+    pj_ssize_t, pj_status_t, pj_str_t, pjmedia_aud_dev_info, pjsip_cred_info, pjsip_status_code,
+    pjsip_transport_type_e, pjsua_acc_config, pjsua_acc_id, pjsua_acc_info, pjsua_call_id,
+    pjsua_call_info, pjsua_call_setting, pjsua_config, pjsua_logging_config, pjsua_media_config,
+    pjsua_msg_data, pjsua_player_id, pjsua_transport_config, pjsua_transport_id,
 };
 
 // ---------------------------------------------------------------------------
@@ -90,6 +92,16 @@ extern "C" {
     ) -> pj_status_t;
     fn pjsua_call_dial_dtmf(call_id: pjsua_call_id, digits: *const pj_str_t) -> pj_status_t;
     fn pjsua_conf_connect(source: i32, sink: i32) -> pj_status_t;
+    fn pjsua_conf_disconnect(source: i32, sink: i32) -> pj_status_t;
+    fn pjsua_enum_aud_devs(info: *mut pjmedia_aud_dev_info, count: *mut c_uint) -> pj_status_t;
+    fn pjsua_set_snd_dev(capture_dev: i32, playback_dev: i32) -> pj_status_t;
+    fn pjsua_player_create(
+        filename: *const pj_str_t,
+        options: c_uint,
+        p_id: *mut pjsua_player_id,
+    ) -> pj_status_t;
+    fn pjsua_player_get_conf_port(id: pjsua_player_id) -> i32;
+    fn pjsua_player_destroy(id: pjsua_player_id) -> pj_status_t;
 }
 
 const PJ_SUCCESS: i32 = 0;
@@ -115,6 +127,26 @@ static EVENT_TX: Mutex<Option<mpsc::UnboundedSender<SipEvent>>> = Mutex::new(Non
 static ACCOUNT_INFOS: OnceLock<Mutex<HashMap<AccountId, AccountInfo>>> = OnceLock::new();
 static CALL_INFOS: OnceLock<Mutex<HashMap<CallId, CallInfo>>> = OnceLock::new();
 static ACCOUNT_IDS: OnceLock<Mutex<HashMap<pjsua_acc_id, AccountId>>> = OnceLock::new();
+static RINGTONE_PATH: OnceLock<Mutex<Option<std::path::PathBuf>>> = OnceLock::new();
+static RINGTONE_PLAYER: OnceLock<Mutex<Option<pjsua_player_id>>> = OnceLock::new();
+static RINGTONE_PREVIEW: OnceLock<Mutex<bool>> = OnceLock::new();
+static RINGING_CALLS: OnceLock<Mutex<HashSet<pjsua_call_id>>> = OnceLock::new();
+
+fn ringtone_path() -> &'static Mutex<Option<std::path::PathBuf>> {
+    RINGTONE_PATH.get_or_init(|| Mutex::new(None))
+}
+
+fn ringtone_player() -> &'static Mutex<Option<pjsua_player_id>> {
+    RINGTONE_PLAYER.get_or_init(|| Mutex::new(None))
+}
+
+fn ringtone_preview() -> &'static Mutex<bool> {
+    RINGTONE_PREVIEW.get_or_init(|| Mutex::new(false))
+}
+
+fn ringing_calls() -> &'static Mutex<HashSet<pjsua_call_id>> {
+    RINGING_CALLS.get_or_init(|| Mutex::new(HashSet::new()))
+}
 
 fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
     mutex.lock().unwrap_or_else(|err| err.into_inner())
@@ -146,6 +178,145 @@ fn pj_to_string(value: &pj_str_t) -> String {
         let bytes = std::slice::from_raw_parts(value.ptr as *const u8, value.slen as usize);
         String::from_utf8_lossy(bytes).into_owned()
     }
+}
+
+fn fixed_c_string(ptr: *const c_char) -> String {
+    unsafe { CStr::from_ptr(ptr).to_string_lossy().into_owned() }
+}
+
+fn default_ringtone() -> Option<std::path::PathBuf> {
+    [
+        "/usr/share/sounds/microsip-linux/ringtone.wav",
+        concat!(env!("CARGO_MANIFEST_DIR"), "/assets/ringtone.wav"),
+        "/usr/share/sounds/elementary/stereo/bell.wav",
+        "/usr/share/sounds/freedesktop/stereo/phone.wav",
+    ]
+    .iter()
+    .map(std::path::PathBuf::from)
+    .find(|path| path.is_file())
+}
+
+/// PJSUA solo reproduce WAV PCM de 16 bit mono. Validar el contenedor evita
+/// guardar un timbre que solo fallaría al recibir la primera llamada.
+fn validate_ringtone_wav(path: &std::path::Path) -> Result<(), String> {
+    let mut file = File::open(path).map_err(|err| format!("No se pudo abrir el timbre: {err}"))?;
+    let mut header = [0u8; 12];
+    file.read_exact(&mut header)
+        .map_err(|err| format!("WAV inválido: {err}"))?;
+    if &header[0..4] != b"RIFF" || &header[8..12] != b"WAVE" {
+        return Err("El timbre debe ser un WAV válido".into());
+    }
+
+    let file_len = file.metadata().map_err(|err| err.to_string())?.len();
+    let mut offset = 12u64;
+    let mut found_format = false;
+    let mut found_data = false;
+    while offset.saturating_add(8) <= file_len {
+        file.seek(SeekFrom::Start(offset))
+            .map_err(|err| err.to_string())?;
+        let mut chunk = [0u8; 8];
+        file.read_exact(&mut chunk)
+            .map_err(|err| format!("WAV inválido: {err}"))?;
+        let size = u32::from_le_bytes(chunk[4..8].try_into().unwrap()) as u64;
+        let data_offset = offset + 8;
+        if &chunk[0..4] == b"fmt " {
+            found_format = true;
+            if size < 16 || data_offset.saturating_add(size) > file_len {
+                return Err("WAV inválido: bloque fmt incompleto".into());
+            }
+            let mut fmt = [0u8; 16];
+            file.read_exact(&mut fmt)
+                .map_err(|err| format!("WAV inválido: {err}"))?;
+            let encoding = u16::from_le_bytes(fmt[0..2].try_into().unwrap());
+            let channels = u16::from_le_bytes(fmt[2..4].try_into().unwrap());
+            let sample_rate = u32::from_le_bytes(fmt[4..8].try_into().unwrap());
+            let bits = u16::from_le_bytes(fmt[14..16].try_into().unwrap());
+            if encoding != 1 || channels != 1 || bits != 16 {
+                return Err("El WAV debe ser PCM de 16 bit y mono".into());
+            }
+            // pjproject se compila con --disable-resample y el puente usa
+            // PJSUA_DEFAULT_CLOCK_RATE (16 kHz). Otro reloj no se puede
+            // conectar al conference bridge.
+            if sample_rate != 16_000 {
+                return Err("El WAV debe muestrearse a 16000 Hz".into());
+            }
+        } else if &chunk[0..4] == b"data" {
+            if data_offset.saturating_add(size) > file_len {
+                return Err("WAV inválido: bloque data incompleto".into());
+            }
+            found_data = true;
+        }
+        offset = data_offset.saturating_add(size).saturating_add(size % 2);
+    }
+    if !found_format || !found_data {
+        return Err("WAV inválido: faltan bloques fmt o data".into());
+    }
+    Ok(())
+}
+
+fn start_ringtone_player() -> Result<(), String> {
+    let mut player = lock(ringtone_player());
+    if player.is_some() {
+        return Ok(());
+    }
+    let configured = lock(ringtone_path()).clone();
+    let path = configured
+        .or_else(default_ringtone)
+        .ok_or_else(|| "No hay timbre WAV disponible: selecciona uno en Sonido".to_string())?;
+    let path_c = CString::new(path.to_string_lossy().as_bytes()).map_err(|e| e.to_string())?;
+    let path_pj = pj_str_from_cstring(&path_c);
+    let mut id = 0;
+    let status = unsafe { pjsua_player_create(&path_pj, 0, &mut id) };
+    if status != PJ_SUCCESS {
+        return Err(format!(
+            "No se pudo abrir el timbre {}: {status}",
+            path.display()
+        ));
+    }
+    let slot = unsafe { pjsua_player_get_conf_port(id) };
+    let connected = unsafe { pjsua_conf_connect(slot, 0) };
+    if connected != PJ_SUCCESS {
+        unsafe {
+            let _ = pjsua_player_destroy(id);
+        }
+        return Err(format!(
+            "No se pudo conectar el timbre al altavoz: {connected}"
+        ));
+    }
+    *player = Some(id);
+    tracing::info!(target: "sip::pjsip", "timbre reproduciéndose: {}", path.display());
+    Ok(())
+}
+
+fn stop_ringtone_player() {
+    let id = lock(ringtone_player()).take();
+    if let Some(id) = id {
+        unsafe {
+            let slot = pjsua_player_get_conf_port(id);
+            let _ = pjsua_conf_disconnect(slot, 0);
+            let _ = pjsua_player_destroy(id);
+        }
+        tracing::info!(target: "sip::pjsip", "timbre detenido");
+    }
+}
+
+fn sync_ringtone() {
+    // Tomar los guards por separado: en una expresión con `||` el primer
+    // MutexGuard puede seguir vivo mientras se toma el segundo, en orden
+    // inverso al de update_call_info (ringing -> preview).
+    let preview = *lock(ringtone_preview());
+    let ringing = !lock(ringing_calls()).is_empty();
+    if !preview && !ringing {
+        stop_ringtone_player();
+    } else if let Err(err) = start_ringtone_player() {
+        tracing::warn!(target: "sip::pjsip", "timbre: {err}");
+    }
+}
+
+fn stop_ringing_call(call_id: pjsua_call_id) {
+    lock(ringing_calls()).remove(&call_id);
+    *lock(ringtone_preview()) = false;
+    sync_ringtone();
 }
 
 fn map_reg_state(status: pjsip_status_code) -> RegistrationState {
@@ -220,6 +391,14 @@ fn update_call_info(call_id: pjsua_call_id) -> Option<CallInfo> {
     } else {
         lock(call_infos()).insert(call.clone(), call_info.clone());
     }
+    if incoming {
+        if matches!(state, CallState::Incoming | CallState::Early) {
+            lock(ringing_calls()).insert(call_id);
+        } else {
+            lock(ringing_calls()).remove(&call_id);
+            *lock(ringtone_preview()) = false;
+        }
+    }
     emit(SipEvent::CallStateChanged {
         call,
         state,
@@ -250,6 +429,9 @@ extern "C" fn cb_on_incoming_call(
     _rdata: *mut bindings::pjsip_rx_data,
 ) {
     let _ = catch_unwind(AssertUnwindSafe(|| {
+        // Una llamada real sustituye a la prueba de timbre: al contestar debe
+        // detenerse, no quedar sonando por la bandera de preview.
+        *lock(ringtone_preview()) = false;
         if let Some(info) = update_call_info(call_id) {
             emit(SipEvent::CallIncoming {
                 call: info.id,
@@ -300,6 +482,9 @@ impl PjsipBackend {
         *lock(account_infos()) = HashMap::new();
         *lock(call_infos()) = HashMap::new();
         *lock(account_ids()) = HashMap::new();
+        *lock(ringing_calls()) = HashSet::new();
+        *lock(ringtone_preview()) = false;
+        *lock(ringtone_player()) = None;
         Self {
             initialized: false,
             accounts: Mutex::new(HashMap::new()),
@@ -477,6 +662,7 @@ impl PjsipBackend {
                 return Err(format!("pjsua_call_answer falló: {st}"));
             }
         }
+        stop_ringing_call(call_id);
         Ok(())
     }
 
@@ -493,6 +679,7 @@ impl PjsipBackend {
                 return Err(format!("pjsua_call_hangup falló: {st}"));
             }
         }
+        stop_ringing_call(call_id);
         Ok(())
     }
 
@@ -504,6 +691,7 @@ impl PjsipBackend {
                 return Err(format!("pjsua_call_hangup falló: {st}"));
             }
         }
+        stop_ringing_call(call_id);
         Ok(())
     }
 
@@ -557,6 +745,8 @@ impl Default for PjsipBackend {
 
 impl Drop for PjsipBackend {
     fn drop(&mut self) {
+        *lock(ringtone_preview()) = false;
+        stop_ringtone_player();
         if self.initialized {
             unsafe {
                 let _ = pjsua_destroy();
@@ -667,5 +857,126 @@ impl SipBackend for PjsipBackend {
 
     fn calls(&self) -> Vec<CallInfo> {
         lock(call_infos()).values().cloned().collect()
+    }
+
+    fn audio_devices(&self) -> Vec<AudioDeviceInfo> {
+        if !self.initialized {
+            return Vec::new();
+        }
+        let mut count: c_uint = 64;
+        let mut infos = vec![unsafe { std::mem::zeroed::<pjmedia_aud_dev_info>() }; count as usize];
+        let status = unsafe { pjsua_enum_aud_devs(infos.as_mut_ptr(), &mut count) };
+        if status != PJ_SUCCESS {
+            tracing::warn!(target: "sip::pjsip", "enumerar audio falló: {status}");
+            return Vec::new();
+        }
+        infos.truncate(count as usize);
+        tracing::info!(target: "sip::pjsip", "dispositivos de audio enumerados: {count}");
+        infos
+            .into_iter()
+            .map(|info| {
+                let device = AudioDeviceInfo {
+                    id: info.id,
+                    name: fixed_c_string(info.name.as_ptr()),
+                    driver: fixed_c_string(info.driver.as_ptr()),
+                    input_count: info.input_count,
+                    output_count: info.output_count,
+                };
+                tracing::debug!(
+                    target: "sip::pjsip",
+                    "audio {}: {} [{}] in={} out={}",
+                    device.id,
+                    device.name,
+                    device.driver,
+                    device.input_count,
+                    device.output_count
+                );
+                device
+            })
+            .collect()
+    }
+
+    fn set_audio_devices(&self, capture_id: i32, playback_id: i32) -> Result<(), String> {
+        if !self.initialized {
+            return Err("PJSUA no inicializado".into());
+        }
+        let status = unsafe { pjsua_set_snd_dev(capture_id, playback_id) };
+        if status == PJ_SUCCESS {
+            tracing::info!(
+                target: "sip::pjsip",
+                "dispositivos de audio: captura={capture_id}, reproducción={playback_id}"
+            );
+            Ok(())
+        } else {
+            Err(format!(
+                "No se pudieron abrir los dispositivos de audio: {status}"
+            ))
+        }
+    }
+
+    fn set_ringtone(&self, path: Option<std::path::PathBuf>) -> Result<(), String> {
+        if let Some(path) = path.as_ref() {
+            if !path.is_file() {
+                return Err(format!("El timbre no existe: {}", path.display()));
+            }
+            let is_wav = path
+                .extension()
+                .and_then(|ext| ext.to_str())
+                .map(|ext| ext.eq_ignore_ascii_case("wav"))
+                .unwrap_or(false);
+            if !is_wav {
+                return Err("El timbre debe ser un archivo WAV".into());
+            }
+            validate_ringtone_wav(path)?;
+        }
+        stop_ringtone_player();
+        *lock(ringtone_path()) = path;
+        sync_ringtone();
+        Ok(())
+    }
+
+    fn refresh_ringtone(&self) {
+        sync_ringtone();
+    }
+
+    fn preview_ringtone(&self) -> Result<(), String> {
+        *lock(ringtone_preview()) = true;
+        if let Err(err) = start_ringtone_player() {
+            *lock(ringtone_preview()) = false;
+            return Err(err);
+        }
+        Ok(())
+    }
+
+    fn stop_ringtone(&self) {
+        *lock(ringtone_preview()) = false;
+        sync_ringtone();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn bundled_ringtone_is_valid_pcm_mono() {
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("assets/ringtone.wav");
+        validate_ringtone_wav(&path).expect("el timbre incluido debe ser WAV PCM 16 bit mono");
+    }
+
+    #[test]
+    #[ignore = "requiere un dispositivo de audio; reproduce el timbre brevemente"]
+    fn pjsip_audio_smoke() {
+        let mut backend = PjsipBackend::new();
+        backend.init().expect("PJSUA debe iniciar");
+        assert!(
+            !backend.audio_devices().is_empty(),
+            "PJSUA debe enumerar al menos un dispositivo"
+        );
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("assets/ringtone.wav");
+        backend.set_ringtone(Some(path)).unwrap();
+        backend.preview_ringtone().unwrap();
+        std::thread::sleep(std::time::Duration::from_secs(1));
+        backend.stop_ringtone();
     }
 }

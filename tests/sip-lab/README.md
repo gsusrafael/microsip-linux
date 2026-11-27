@@ -19,6 +19,7 @@ MicroSIP / pjsua  ──UDP 5060──▶  pbx.py (registrar + proxy)  ──▶
 | `sip_client.py` | UA SIP en Python (el lado "scripted" de las pruebas) |
 | `run_tests.py` | Suite de 36 aserciones de protocolo → `evidencia/test-results.json` |
 | `run_pjsua_test.sh` | Empareja dos `pjsua` reales (el stack PJSIP de MicroSIP) contra el PBX |
+| `run_microsip_audio_test.sh` | Valida el audio de MicroSIP: registro, timbre WAV, auto-respuesta, CONFIRMED y DISCONNECTED |
 
 ### Binarios disponibles en la máquina (investigado, [VERIFIED 2026-11-26])
 
@@ -155,6 +156,22 @@ tail -f logs/pbx.log
 Y `run_pjsua_test.sh` valida contra **dos softphones PJSIP reales**: registro
 con digest (`registration success, status=200`) y llamada `CONFIRMED` en ambos
 extremos, colgada con `200 OK`.
+
+### Audio y timbre de MicroSIP
+
+Con el PBX arriba, en otra terminal:
+
+```sh
+./run_microsip_audio_test.sh
+# → RESULT: PASS — registro, timbre, llamada confirmada y cierre
+```
+
+El script compila MicroSIP con `pjsip,test-hooks` y sin bandeja, registra la
+cuenta `1002`, recibe una llamada de `1001` (pjsua con audio nulo), comprueba
+que el WAV de timbre se reproduce y se detiene al auto-contestar, y exige
+`CONFIRMED` y `DISCONNECTED`. Usa `XDG_CONFIG_HOME` temporal y credenciales
+del lab; no toca la configuración del operador. El timbre debe ser WAV PCM
+16 bit mono a 16000 Hz porque este build de pjproject no remuestrea.
 
 ## Límites conocidos (diseño, no bugs)
 

@@ -140,6 +140,9 @@ fn generate_bindings() {
             builder = builder.allowlist_type(pattern).allowlist_function(pattern);
         }
     }
+    // Solo necesitamos este struct de pjmedia para pjsua_enum_aud_devs;
+    // allowlistar pjmedia_.* completo genera miles de bindings inútiles.
+    builder = builder.allowlist_type("pjmedia_aud_dev_info");
 
     let out_dir = PathBuf::from(std::env::var("OUT_DIR").expect("OUT_DIR no definido"));
     builder

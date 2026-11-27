@@ -52,7 +52,8 @@ fi
 
 # 5) contenido mínimo
 for f in usr/share/applications/microsip-linux.desktop \
-         usr/share/icons/hicolor/scalable/apps/microsip-linux.svg; do
+         usr/share/icons/hicolor/scalable/apps/microsip-linux.svg \
+         usr/share/sounds/microsip-linux/ringtone.wav; do
   [ -e "$tmp/$f" ] || { echo "FAIL: falta $f"; exit 1; }
 done
 

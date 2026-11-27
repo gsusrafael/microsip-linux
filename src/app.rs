@@ -4,7 +4,7 @@
 use crate::{config, main_window, sip, tray};
 use gtk4::prelude::*;
 use gtk4::Application;
-use sip::SipBackend;
+use sip::{SipBackend, DEFAULT_CAPTURE_DEVICE, DEFAULT_PLAYBACK_DEVICE};
 use std::cell::RefCell;
 use std::rc::Rc;
 use std::sync::Arc;
@@ -99,6 +99,60 @@ impl MicroSipApp {
             }
         };
         let sip = Rc::new(RefCell::new(backend));
+
+        // Aplicar audio persistido antes de registrar cuentas. Los IDs de
+        // dispositivo pueden cambiar entre arranques, así que se guardan y
+        // resuelven por nombre.
+        let audio = config::load_audio();
+        if !audio.capture_device.is_empty() || !audio.playback_device.is_empty() {
+            let devices = sip.borrow().audio_devices();
+            let capture_id = audio
+                .capture_device
+                .is_empty()
+                .then_some(DEFAULT_CAPTURE_DEVICE)
+                .or_else(|| {
+                    devices
+                        .iter()
+                        .find(|device| {
+                            device.key() == audio.capture_device && device.input_count > 0
+                        })
+                        .map(|device| device.id)
+                })
+                .unwrap_or(DEFAULT_CAPTURE_DEVICE);
+            let playback_id = audio
+                .playback_device
+                .is_empty()
+                .then_some(DEFAULT_PLAYBACK_DEVICE)
+                .or_else(|| {
+                    devices
+                        .iter()
+                        .find(|device| {
+                            device.key() == audio.playback_device && device.output_count > 0
+                        })
+                        .map(|device| device.id)
+                })
+                .unwrap_or(DEFAULT_PLAYBACK_DEVICE);
+            if !audio.capture_device.is_empty()
+                && !devices
+                    .iter()
+                    .any(|device| device.key() == audio.capture_device && device.input_count > 0)
+            {
+                warn!(target: "audio", "micrófono guardado no disponible; usando predeterminado");
+            }
+            if !audio.playback_device.is_empty()
+                && !devices
+                    .iter()
+                    .any(|device| device.key() == audio.playback_device && device.output_count > 0)
+            {
+                warn!(target: "audio", "altavoz guardado no disponible; usando predeterminado");
+            }
+            if let Err(err) = sip.borrow().set_audio_devices(capture_id, playback_id) {
+                warn!(target: "audio", "no se pudo aplicar el audio guardado: {err}");
+            }
+        }
+        if let Err(err) = sip.borrow().set_ringtone(audio.ringtone.clone()) {
+            warn!(target: "audio", "no se pudo aplicar el timbre guardado: {err}");
+        }
 
         // Cargar cuentas persistidas y registrarlas en el backend.
         for account in config::load() {

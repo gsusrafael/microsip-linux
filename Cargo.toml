@@ -33,8 +33,8 @@ MicroSIP es un softphone SIP ligero y fiable portado a Linux. Escrito en Rust
 con interfaz GTK4 y bandeja del sistema, basado en la pila PJSIP (enlazada
 estáticamente en este binario).
 .
-Permite cuentas SIP, marcación, llamadas entrantes/salientes y minimización a
-la bandeja del sistema."""
+Permite cuentas SIP, marcación, llamadas entrantes/salientes, selección de
+micrófono, altavoz y timbre, y minimización a la bandeja del sistema."""
 # files installed by cargo-deb (binary + desktop + icon)
 # OJO (cargo-deb): si `dest` no termina en "/" se toma como RUTA COMPLETA del
 # destino (no como directorio) → sin el nombre de fichero se creaba un fichero
@@ -44,6 +44,7 @@ assets = [
     { source = "target/release/microsip-linux", dest = "usr/bin/microsip-linux", mode = "755" },
     { source = "assets/microsip-linux.desktop", dest = "usr/share/applications/microsip-linux.desktop", mode = "644" },
     { source = "assets/icon.svg", dest = "usr/share/icons/hicolor/scalable/apps/microsip-linux.svg", mode = "644" },
+    { source = "assets/ringtone.wav", dest = "usr/share/sounds/microsip-linux/ringtone.wav", mode = "644" },
 ]
 
 [features]

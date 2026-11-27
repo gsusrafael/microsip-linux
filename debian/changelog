@@ -5,8 +5,11 @@ microsip-linux (0.1.1-1) unstable; urgency=medium
   * Switch to the active call immediately when dialing and for outgoing,
     early, connected and disconnecting call states.
   * Add a GTK UI regression test and run it in native release jobs.
+  * Add Sonido settings: persistent microphone and call-speaker selection,
+    WAV ringtone picker with format validation, preview/stop, automatic
+    ringing on incoming calls, and a bundled PCM mono ringtone.
 
- -- Jesús Rafael Sánchez <jesusrafael@gmail.com>  Fri, 27 Nov 2026 15:20:00 +0000
+ -- Jesús Rafael Sánchez <jesusrafael@gmail.com>  Fri, 27 Nov 2026 16:05:00 +0000
 
 microsip-linux (0.1.0-1) unstable; urgency=medium
 

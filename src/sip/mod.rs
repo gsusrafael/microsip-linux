@@ -62,6 +62,28 @@ pub struct CallInfo {
     pub incoming: bool,
 }
 
+/// Dispositivo de audio expuesto por PJSUA/ALSA.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AudioDeviceInfo {
+    pub id: i32,
+    pub name: String,
+    pub driver: String,
+    pub input_count: u32,
+    pub output_count: u32,
+}
+
+impl AudioDeviceInfo {
+    /// Clave estable para persistir la selección: el ID numérico puede cambiar
+    /// al reiniciar o al enchufar otro dispositivo.
+    pub fn key(&self) -> String {
+        if self.driver.is_empty() {
+            self.name.clone()
+        } else {
+            format!("{}\n{}", self.driver, self.name)
+        }
+    }
+}
+
 /// Evento emitido por el backend hacia la UI.
 #[derive(Debug, Clone)]
 pub enum SipEvent {
@@ -125,6 +147,9 @@ pub enum SipCommand {
     },
 }
 
+pub const DEFAULT_CAPTURE_DEVICE: i32 = -1;
+pub const DEFAULT_PLAYBACK_DEVICE: i32 = -2;
+
 pub type SipEventStream = mpsc::UnboundedReceiver<SipEvent>;
 
 /// Backend SIP abstracto. Solo vive en el hilo GTK4; los callbacks de PJSIP
@@ -136,6 +161,12 @@ pub trait SipBackend: 'static {
     fn accounts(&self) -> Vec<AccountInfo>;
     fn default_account(&self) -> Option<AccountId>;
     fn calls(&self) -> Vec<CallInfo>;
+    fn audio_devices(&self) -> Vec<AudioDeviceInfo>;
+    fn set_audio_devices(&self, capture_id: i32, playback_id: i32) -> Result<(), String>;
+    fn set_ringtone(&self, path: Option<std::path::PathBuf>) -> Result<(), String>;
+    fn refresh_ringtone(&self);
+    fn preview_ringtone(&self) -> Result<(), String>;
+    fn stop_ringtone(&self);
 }
 
 /// Fábrica única: crea el backend activo, lo inicializa y entrega el stream
@@ -330,6 +361,26 @@ impl SipBackend for MockBackend {
     fn calls(&self) -> Vec<CallInfo> {
         self.state.lock().unwrap().calls.values().cloned().collect()
     }
+
+    fn audio_devices(&self) -> Vec<AudioDeviceInfo> {
+        Vec::new()
+    }
+
+    fn set_audio_devices(&self, _capture_id: i32, _playback_id: i32) -> Result<(), String> {
+        Ok(())
+    }
+
+    fn set_ringtone(&self, _path: Option<std::path::PathBuf>) -> Result<(), String> {
+        Ok(())
+    }
+
+    fn refresh_ringtone(&self) {}
+
+    fn preview_ringtone(&self) -> Result<(), String> {
+        Ok(())
+    }
+
+    fn stop_ringtone(&self) {}
 }
 
 #[cfg(test)]

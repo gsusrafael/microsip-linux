@@ -112,7 +112,7 @@ jobs:
         if: matrix.cross_host == ''
         run: |
           cargo test --features pjsip
-          xvfb-run -a cargo test --features pjsip -- --ignored
+          xvfb-run -a cargo test --features pjsip ui_exposes_navigation_and_dialer -- --ignored
 
       - name: Compilar y empaquetar .deb
         env:

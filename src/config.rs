@@ -1,8 +1,8 @@
-//! Persistencia local de cuentas SIP.
+//! Persistencia local de cuentas SIP y ajustes de audio.
 //!
-//! Formato simple `clave=valor` por cuenta, separadas por una línea en
-//! blanco. No se crea ningún fichero al arrancar: solo se escribe cuando el
-//! usuario guarda una cuenta. Las credenciales se guardan con permisos 600.
+//! Formato simple `clave=valor`. Las cuentas se separan por una línea en
+//! blanco; el audio vive en `audio.conf`. No se crea ningún fichero al
+//! arrancar: solo al guardar. Permisos 600 para cuentas y ajustes.
 
 use std::fs;
 use std::io;
@@ -32,6 +32,16 @@ impl AccountCfg {
     }
 }
 
+/// Claves estables de los dispositivos elegidos para captura y reproducción.
+/// Vacío = predeterminado del sistema. El timbre es un WAV PCM de 16 bit mono
+/// a 16000 Hz (requisito de este build de PJSUA sin remuestreo).
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct AudioSettings {
+    pub capture_device: String,
+    pub playback_device: String,
+    pub ringtone: Option<PathBuf>,
+}
+
 fn config_dir() -> PathBuf {
     if let Ok(dir) = std::env::var("XDG_CONFIG_HOME") {
         if !dir.is_empty() {
@@ -44,6 +54,50 @@ fn config_dir() -> PathBuf {
 
 fn config_path() -> PathBuf {
     config_dir().join("accounts.conf")
+}
+
+fn audio_config_path() -> PathBuf {
+    config_dir().join("audio.conf")
+}
+
+pub fn load_audio() -> AudioSettings {
+    let Ok(content) = fs::read_to_string(audio_config_path()) else {
+        return AudioSettings::default();
+    };
+    let mut settings = AudioSettings::default();
+    for raw in content.lines() {
+        let Some((key, value)) = raw.split_once('=') else {
+            continue;
+        };
+        let value = unescape(value);
+        match key.trim() {
+            "capture_device" => settings.capture_device = value,
+            "playback_device" => settings.playback_device = value,
+            "ringtone" if !value.is_empty() => settings.ringtone = Some(PathBuf::from(value)),
+            _ => {}
+        }
+    }
+    settings
+}
+
+pub fn save_audio(settings: &AudioSettings) -> io::Result<()> {
+    let dir = config_dir();
+    fs::create_dir_all(&dir)?;
+    let path = audio_config_path();
+    let ringtone = settings
+        .ringtone
+        .as_ref()
+        .map(|path| escape(&path.to_string_lossy()))
+        .unwrap_or_default();
+    let content = format!(
+        "capture_device={}\nplayback_device={}\nringtone={}\n",
+        escape(&settings.capture_device),
+        escape(&settings.playback_device),
+        ringtone
+    );
+    fs::write(&path, content)?;
+    fs::set_permissions(&path, fs::Permissions::from_mode(0o600))?;
+    Ok(())
 }
 
 pub fn load() -> Vec<AccountCfg> {
@@ -234,6 +288,19 @@ mod tests {
         let loaded = load();
         assert_eq!(loaded.len(), 1);
         assert_eq!(loaded[0].id, "bob@localhost");
+
+        let audio = AudioSettings {
+            capture_device: "ALSA\nMicrófono USB".into(),
+            playback_device: "ALSA\nAuriculares".into(),
+            ringtone: Some(PathBuf::from("/tmp/ring tone.wav")),
+        };
+        save_audio(&audio).unwrap();
+        assert_eq!(load_audio(), audio);
+        let mode = fs::metadata(audio_config_path())
+            .unwrap()
+            .permissions()
+            .mode();
+        assert_eq!(mode & 0o777, 0o600);
 
         let _ = fs::remove_dir_all(dir);
     }

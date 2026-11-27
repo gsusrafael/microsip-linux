@@ -3,17 +3,17 @@
 //! Recibe el backend SIP como parámetro: nunca crea otro backend. Los eventos
 //! SIP llegan desde `app.rs` mediante `handle_event`.
 
-use crate::config::{self, AccountCfg};
+use crate::config::{self, AccountCfg, AudioSettings};
 use crate::sip::{
-    AccountId, AccountInfo, CallInfo, CallState, RegistrationState, SipBackend, SipCommand,
-    SipEvent,
+    AccountId, AccountInfo, AudioDeviceInfo, CallInfo, CallState, RegistrationState, SipBackend,
+    SipCommand, SipEvent, DEFAULT_CAPTURE_DEVICE, DEFAULT_PLAYBACK_DEVICE,
 };
 use glib::signal::Inhibit;
 use gtk4::prelude::*;
 use gtk4::Box as GtkBox;
 use gtk4::{
-    Align, Application, ApplicationWindow, Button, Entry, HeaderBar, Label, ListBox, ListBoxRow,
-    Orientation, Stack, StackSwitcher,
+    Align, Application, ApplicationWindow, Button, DropDown, Entry, FileDialog, FileFilter,
+    HeaderBar, Label, ListBox, ListBoxRow, Orientation, Stack, StackSwitcher,
 };
 use std::cell::RefCell;
 use std::rc::Rc;
@@ -57,6 +57,14 @@ impl MainWindow {
 
         let calls_page = calls_page(&calls_list, Rc::clone(&sip));
         stack.add_titled(&calls_page, Some("llamadas"), "Llamadas");
+
+        let audio_page = audio_page(
+            &window,
+            Rc::clone(&sip),
+            status.clone(),
+            config::load_audio(),
+        );
+        stack.add_titled(&audio_page, Some("sonido"), "Sonido");
 
         let header = HeaderBar::new();
         header.set_title_widget(Some(&Label::new(Some("MicroSIP"))));
@@ -148,6 +156,7 @@ impl MainWindow {
                 self.refresh_accounts();
             }
             SipEvent::CallStateChanged { state, .. } => {
+                self.sip.borrow().refresh_ringtone();
                 self.status.set_text(call_label(*state));
                 if matches!(
                     *state,
@@ -162,6 +171,7 @@ impl MainWindow {
                 self.refresh_calls();
             }
             SipEvent::CallIncoming { call, .. } => {
+                self.sip.borrow().refresh_ringtone();
                 #[cfg(feature = "test-hooks")]
                 if std::env::var("MICROSIP_TEST_AUTO_ANSWER").is_ok() {
                     info!(target: "test", "auto-contestando {:?}", call);
@@ -445,6 +455,252 @@ fn calls_page(list: &ListBox, _sip: Rc<RefCell<Box<dyn SipBackend>>>) -> GtkBox 
     box_
 }
 
+fn audio_page(
+    window: &ApplicationWindow,
+    sip: Rc<RefCell<Box<dyn SipBackend>>>,
+    status: Label,
+    settings: AudioSettings,
+) -> GtkBox {
+    let box_ = GtkBox::new(Orientation::Vertical, 16);
+    box_.set_margin_top(24);
+    box_.set_margin_start(24);
+    box_.set_margin_end(24);
+    box_.set_margin_bottom(24);
+
+    let title = Label::new(Some("Sonido"));
+    title.set_halign(Align::Start);
+    title.add_css_class("title-1");
+    box_.append(&title);
+
+    let note = Label::new(Some(
+        "Elige micrófono y altavoz para las llamadas. El timbre se reproduce en el altavoz elegido.",
+    ));
+    note.set_xalign(0.0);
+    note.set_wrap(true);
+    note.add_css_class("dim-label");
+    box_.append(&note);
+
+    let devices = sip.borrow().audio_devices();
+    let capture_devices: Vec<AudioDeviceInfo> = devices
+        .iter()
+        .filter(|device| device.input_count > 0 && !is_internal_audio_device(&device.name))
+        .cloned()
+        .collect();
+    let playback_devices: Vec<AudioDeviceInfo> = devices
+        .iter()
+        .filter(|device| device.output_count > 0 && !is_internal_audio_device(&device.name))
+        .cloned()
+        .collect();
+
+    let grid = gtk4::Grid::new();
+    grid.set_row_spacing(12);
+    grid.set_column_spacing(16);
+    grid.set_hexpand(true);
+
+    let capture_label = Label::new(Some("Micrófono"));
+    capture_label.set_xalign(0.0);
+    let capture_dropdown = device_dropdown(&capture_devices, &settings.capture_device);
+    capture_dropdown.set_hexpand(true);
+    grid.attach(&capture_label, 0, 0, 1, 1);
+    grid.attach(&capture_dropdown, 1, 0, 1, 1);
+
+    let playback_label = Label::new(Some("Altavoz de llamadas"));
+    playback_label.set_xalign(0.0);
+    let playback_dropdown = device_dropdown(&playback_devices, &settings.playback_device);
+    playback_dropdown.set_hexpand(true);
+    grid.attach(&playback_label, 0, 1, 1, 1);
+    grid.attach(&playback_dropdown, 1, 1, 1, 1);
+
+    let ringtone_label = Label::new(Some("Timbre de llamada"));
+    ringtone_label.set_xalign(0.0);
+    let ringtone_row = GtkBox::new(Orientation::Horizontal, 8);
+    ringtone_row.set_hexpand(true);
+    let ringtone_value = Label::new(Some(&ringtone_display(&settings.ringtone)));
+    ringtone_value.set_xalign(0.0);
+    ringtone_value.set_hexpand(true);
+    ringtone_value.set_ellipsize(gtk4::pango::EllipsizeMode::End);
+    let choose_ringtone = Button::with_label("Elegir WAV…");
+    let default_ringtone = Button::with_label("Predeterminado");
+    ringtone_row.append(&ringtone_value);
+    ringtone_row.append(&choose_ringtone);
+    ringtone_row.append(&default_ringtone);
+    grid.attach(&ringtone_label, 0, 2, 1, 1);
+    grid.attach(&ringtone_row, 1, 2, 1, 1);
+    box_.append(&grid);
+
+    let buttons = GtkBox::new(Orientation::Horizontal, 8);
+    buttons.set_halign(Align::End);
+    let preview = Button::with_label("Probar timbre");
+    let stop_preview = Button::with_label("Detener prueba");
+    let save = Button::with_label("Guardar ajustes");
+    save.add_css_class("suggested-action");
+    buttons.append(&preview);
+    buttons.append(&stop_preview);
+    buttons.append(&save);
+    box_.append(&buttons);
+
+    let ringtone = Rc::new(RefCell::new(settings.ringtone.clone()));
+    let dialog = FileDialog::builder()
+        .title("Seleccionar timbre de llamada")
+        .modal(true)
+        .build();
+    let filter = FileFilter::new();
+    filter.set_name(Some("WAV PCM 16 bit mono · 16000 Hz (*.wav)"));
+    filter.add_pattern("*.wav");
+    filter.add_pattern("*.WAV");
+    let filters = gtk4::gio::ListStore::new(gtk4::FileFilter::static_type());
+    filters.append(&filter);
+    dialog.set_filters(&filters);
+    dialog.set_default_filter(Some(&filter));
+
+    let ringtone_for_dialog = Rc::clone(&ringtone);
+    let value_for_dialog = ringtone_value.clone();
+    let status_for_dialog = status.clone();
+    let window_for_dialog = window.clone();
+    choose_ringtone.connect_clicked(move |_| {
+        let ringtone = Rc::clone(&ringtone_for_dialog);
+        let value = value_for_dialog.clone();
+        let status = status_for_dialog.clone();
+        let parent = window_for_dialog.clone();
+        dialog.open(
+            Some(&parent),
+            None::<&gtk4::gio::Cancellable>,
+            move |result| match result {
+                Ok(file) => {
+                    let Some(path) = file.path() else {
+                        status.set_text("No se pudo obtener la ruta del timbre");
+                        return;
+                    };
+                    let is_wav = path
+                        .extension()
+                        .and_then(|ext| ext.to_str())
+                        .map(|ext| ext.eq_ignore_ascii_case("wav"))
+                        .unwrap_or(false);
+                    if !is_wav {
+                        status.set_text("El timbre debe ser un archivo WAV");
+                        return;
+                    }
+                    value.set_text(&ringtone_display(&Some(path.clone())));
+                    *ringtone.borrow_mut() = Some(path);
+                    status.set_text("Timbre seleccionado; pulsa Guardar ajustes");
+                }
+                Err(err) => status.set_text(&format!("No se seleccionó timbre: {err}")),
+            },
+        );
+    });
+
+    let ringtone_for_default = Rc::clone(&ringtone);
+    let value_for_default = ringtone_value.clone();
+    let status_for_default = status.clone();
+    default_ringtone.connect_clicked(move |_| {
+        *ringtone_for_default.borrow_mut() = None;
+        value_for_default.set_text(&ringtone_display(&None));
+        status_for_default.set_text("Timbre predeterminado; pulsa Guardar ajustes");
+    });
+
+    let sip_for_preview = Rc::clone(&sip);
+    let status_for_preview = status.clone();
+    let ringtone_for_preview = Rc::clone(&ringtone);
+    preview.connect_clicked(move |_| {
+        let backend = sip_for_preview.borrow();
+        let result = backend
+            .set_ringtone(ringtone_for_preview.borrow().clone())
+            .and_then(|()| backend.preview_ringtone());
+        match result {
+            Ok(()) => status_for_preview.set_text("Reproduciendo timbre…"),
+            Err(err) => status_for_preview.set_text(&format!("No se pudo reproducir: {err}")),
+        }
+    });
+
+    let sip_for_stop = Rc::clone(&sip);
+    let status_for_stop = status.clone();
+    stop_preview.connect_clicked(move |_| {
+        sip_for_stop.borrow().stop_ringtone();
+        status_for_stop.set_text("Prueba de timbre detenida");
+    });
+
+    let sip_for_save = Rc::clone(&sip);
+    let status_for_save = status.clone();
+    let ringtone_for_save = Rc::clone(&ringtone);
+    save.connect_clicked(move |_| {
+        let capture = selected_device(&capture_devices, &capture_dropdown);
+        let playback = selected_device(&playback_devices, &playback_dropdown);
+        let capture_id = capture
+            .as_ref()
+            .map(|device| device.id)
+            .unwrap_or(DEFAULT_CAPTURE_DEVICE);
+        let playback_id = playback
+            .as_ref()
+            .map(|device| device.id)
+            .unwrap_or(DEFAULT_PLAYBACK_DEVICE);
+        if let Err(err) = sip_for_save
+            .borrow()
+            .set_audio_devices(capture_id, playback_id)
+        {
+            status_for_save.set_text(&format!("No se aplicó el audio: {err}"));
+            return;
+        }
+        let ringtone = ringtone_for_save.borrow().clone();
+        if let Err(err) = sip_for_save.borrow().set_ringtone(ringtone.clone()) {
+            status_for_save.set_text(&format!("No se aplicó el timbre: {err}"));
+            return;
+        }
+        let audio = AudioSettings {
+            capture_device: capture.map(|device| device.key()).unwrap_or_default(),
+            playback_device: playback.map(|device| device.key()).unwrap_or_default(),
+            ringtone,
+        };
+        match config::save_audio(&audio) {
+            Ok(()) => status_for_save.set_text("Ajustes de sonido guardados"),
+            Err(err) => status_for_save.set_text(&format!("No se pudieron guardar: {err}")),
+        }
+    });
+
+    box_
+}
+
+fn is_internal_audio_device(name: &str) -> bool {
+    matches!(
+        name,
+        "lavrate" | "samplerate" | "speexrate" | "speex" | "upmix" | "vdownmix" | "jack" | "oss"
+    ) || name.starts_with("dmix:")
+        || name.starts_with("dsnoop:")
+        || name.starts_with("usbstream:")
+}
+
+fn device_dropdown(devices: &[AudioDeviceInfo], selected_name: &str) -> DropDown {
+    let mut labels = vec!["Predeterminado del sistema".to_string()];
+    labels.extend(devices.iter().map(|device| {
+        if device.driver.is_empty() {
+            device.name.clone()
+        } else {
+            format!("{} ({})", device.name, device.driver)
+        }
+    }));
+    let refs: Vec<&str> = labels.iter().map(String::as_str).collect();
+    let dropdown = DropDown::from_strings(&refs);
+    dropdown.set_enable_search(true);
+    let selected = devices
+        .iter()
+        .position(|device| device.key() == selected_name)
+        .map(|index| index as u32 + 1)
+        .unwrap_or(0);
+    dropdown.set_selected(selected);
+    dropdown
+}
+
+fn selected_device(devices: &[AudioDeviceInfo], dropdown: &DropDown) -> Option<AudioDeviceInfo> {
+    let index = dropdown.selected().checked_sub(1)? as usize;
+    devices.get(index).cloned()
+}
+
+fn ringtone_display(path: &Option<std::path::PathBuf>) -> String {
+    path.as_ref()
+        .and_then(|path| path.file_name())
+        .map(|name| name.to_string_lossy().into_owned())
+        .unwrap_or_else(|| "Predeterminado del sistema".into())
+}
+
 // ---------------------------------------------------------------------------
 // Filas
 // ---------------------------------------------------------------------------
@@ -693,6 +949,12 @@ mod tests {
     #[ignore = "requiere display; ejecutar con xvfb-run"]
     fn ui_exposes_navigation_and_dialer() {
         gtk4::init().expect("no se pudo iniciar GTK4");
+        let nanos = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let config_home = std::path::PathBuf::from(format!("/tmp/microsip-ui-audio-test-{nanos}"));
+        std::env::set_var("XDG_CONFIG_HOME", &config_home);
         let app = Application::builder()
             .application_id("org.microsip.linux.ui-test")
             .build();
@@ -732,5 +994,31 @@ mod tests {
             "pulsar Llamar debe mostrar la llamada inmediatamente"
         );
         assert_eq!(window.sip.borrow().calls().len(), 1);
+
+        assert!(window.stack.child_by_name("sonido").is_some());
+        let fake_devices = vec![AudioDeviceInfo {
+            id: 7,
+            name: "Micrófono de prueba".into(),
+            driver: "ALSA".into(),
+            input_count: 1,
+            output_count: 0,
+        }];
+        let fake_dropdown = device_dropdown(&fake_devices, "ALSA\nMicrófono de prueba");
+        assert_eq!(fake_dropdown.selected(), 1);
+        assert_eq!(
+            selected_device(&fake_devices, &fake_dropdown).unwrap().id,
+            7
+        );
+
+        let save_audio = find_button(root, "Guardar ajustes").expect("falta Guardar ajustes");
+        let preview_audio = find_button(root, "Probar timbre").expect("falta Probar timbre");
+        let stop_audio = find_button(root, "Detener prueba").expect("falta Detener prueba");
+        save_audio.emit_clicked();
+        assert_eq!(window.status.text().as_str(), "Ajustes de sonido guardados");
+        preview_audio.emit_clicked();
+        assert_eq!(window.status.text().as_str(), "Reproduciendo timbre…");
+        stop_audio.emit_clicked();
+        assert_eq!(window.status.text().as_str(), "Prueba de timbre detenida");
+        let _ = std::fs::remove_dir_all(config_home);
     }
 }

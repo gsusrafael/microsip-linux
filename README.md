@@ -4,8 +4,9 @@ Port de [MicroSIP](https://www.microsip.org/) (softphone SIP basado en PJSIP) a
 Linux, escrito en **Rust + GTK4**, con soporte de **bandeja del sistema** y
 empaquetado como **.deb** para Debian/Ubuntu.
 
-> **Estado:** v0.1.1 — UI navegable (Cuentas / Marcador / Llamadas), backend
-> PJSIP real y paquetes `.deb` multi-arquitectura.
+> **Estado:** v0.1.1 — UI navegable (Cuentas / Marcador / Llamadas / Sonido),
+> selección de micrófono, altavoz y timbre, backend PJSIP real y paquetes
+> `.deb` multi-arquitectura.
 > Los structs C se generan con **bindgen** desde
 > `~/.local/include/pjsua-lib/pjsua.h` (layout exacto de pjproject 2.15).
 > La UI GTK4 usa **un único backend SIP** (mock o PJSIP real con
@@ -250,10 +251,11 @@ Luego compilar MicroSIP con `--features pjsip`.
 
 | Qué probar | Comando | Qué debería ver |
 |---|---|---|
-| UI se abre | `cargo run --release` | Ventana "MicroSIP" abre en "Marcador", con Cuentas/Marcador/Llamadas visibles |
+| UI se abre | `cargo run --release` | Ventana "MicroSIP" abre en "Marcador", con Cuentas/Marcador/Llamadas/Sonido visibles |
 | Cuentas | `cargo run --release` → pestaña "Cuentas" | Lista vacía o cuentas guardadas; botón «＋ Cuenta» |
 | Marcador numérico | `cargo run --release` → "Marcador" | Teclado 0-9, *, #, botón "Llamar" |
-| Regresión de navegación | `xvfb-run -a cargo test --features pjsip -- --ignored` | 1 passed: selector visible, apertura en Marcador y salto a Llamadas |
+| Regresión de navegación | `xvfb-run -a cargo test --features pjsip ui_exposes_navigation_and_dialer -- --ignored` | 1 passed: selector visible, apertura en Marcador, salto a Llamadas y controles de Sonido |
+| Sonido | pestaña "Sonido" | Micrófono, altavoz de llamadas, timbre WAV, probar/detener prueba y guardar |
 | Bandeja del sistema | `cargo run --release` → cerrar ventana | Icono SNI; clic para mostrar, menú «Salir» |
 | Cuenta persistida | Guardar una cuenta y reiniciar | La cuenta reaparece en «Cuentas» (`~/.config/microsip-linux/accounts.conf`, 600) |
 | Registro SIP real | Cuenta apuntando a un PBX y `RUST_LOG=info` | Log PJSUA: `Adding account`, `Registration sent` y `TX ... REGISTER` |
@@ -290,14 +292,28 @@ ALSA); llamada entrante `180 Ringing → 200 OK` con audio conectado en ambos
 extremos. La feature `test-hooks` (auto-marcar/auto-contestar) no se incluye en
 el `.deb`.
 
+### Audio y timbre
+
+La pestaña **Sonido** enumera los dispositivos PJSUA/ALSA con capacidad de
+captura o reproducción. La selección se guarda en
+`~/.config/microsip-linux/audio.conf` (600), usando driver + nombre para
+resolverla aunque cambie el ID numérico al reiniciar.
+
+El timbre admite **WAV PCM de 16 bit mono a 16000 Hz** (el puente de audio de
+este build no remuestrea). «Probar timbre» reproduce el WAV
+seleccionado (o el incluido en el paquete) por el altavoz de llamadas;
+«Detener prueba» cancela la reproducción. Al recibir una llamada suena
+automáticamente y se detiene al contestar, rechazar o colgar. El `.deb`
+incluye `assets/ringtone.wav` en `/usr/share/sounds/microsip-linux/`.
+
 ---
 
 ## Roadmap (v1 → v1.1)
 
-1. Probar llamada real contra un PBX/PBX local (registro + audio bidireccional).
-2. Seleccionar dispositivo de captura/reproducción en la UI.
-3. Transferencia de llamada, hold y mute.
-4. MWI/buzón de voz y llamadas perdidas.
+1. Transferencia de llamada, hold y mute.
+2. MWI/buzón de voz y llamadas perdidas.
+3. Selector de códecs y puertos SIP/RTP.
+4. Historial de llamadas.
 
 ---
 
