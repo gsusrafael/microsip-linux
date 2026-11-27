@@ -4,7 +4,8 @@ Port de [MicroSIP](https://www.microsip.org/) (softphone SIP basado en PJSIP) a
 Linux, escrito en **Rust + GTK4**, con soporte de **bandeja del sistema** y
 empaquetado como **.deb** para Debian/Ubuntu.
 
-> **Estado:** v0.1.0 — integración UI ↔ PJSIP completa y empaquetada.
+> **Estado:** v0.1.1 — UI navegable (Cuentas / Marcador / Llamadas), backend
+> PJSIP real y paquetes `.deb` multi-arquitectura.
 > Los structs C se generan con **bindgen** desde
 > `~/.local/include/pjsua-lib/pjsua.h` (layout exacto de pjproject 2.15).
 > La UI GTK4 usa **un único backend SIP** (mock o PJSIP real con
@@ -149,13 +150,13 @@ texto visible y sin avisos `Adwaita-WARNING`.
 
 ```bash
 cargo install cargo-deb        # si no está instalado
-cargo deb                      # genera target/debian/microsip-linux_0.1.0-1_amd64.deb
+cargo deb                      # genera target/debian/microsip-linux_0.1.1-1_amd64.deb
 ```
 
 Instalar:
 
 ```bash
-sudo apt install ./target/debian/microsip-linux_0.1.0-1_amd64.deb
+sudo apt install ./target/debian/microsip-linux_0.1.1-1_amd64.deb
 ```
 
 El `.deb` incluye:
@@ -207,13 +208,14 @@ Cada job:
 El job `release` descarga los tres y los adjunta a la release con
 `softprops/action-gh-release`.
 
-**v0.1.0 ya publicada:** <https://github.com/gsusrafael/microsip-linux/releases/tag/v0.1.0>
-(con los tres `.deb` adjuntos: `amd64`, `arm64`, `armhf`).
+**v0.1.1:** corrige la navegación de la ventana (la v0.1.0 abría solo en
+Cuentas, sin selector visible para llegar al marcador). Los jobs nativos
+ejecutan además una prueba de regresión GTK bajo Xvfb.
 
 Para publicar una versión nueva:
 
 ```bash
-git tag v0.1.0 && git push origin v0.1.0
+git tag v0.1.1 && git push origin v0.1.1
 ```
 
 ---
@@ -248,9 +250,10 @@ Luego compilar MicroSIP con `--features pjsip`.
 
 | Qué probar | Comando | Qué debería ver |
 |---|---|---|
-| UI se abre | `cargo run --release` | Ventana "MicroSIP" con 3 pestañas |
+| UI se abre | `cargo run --release` | Ventana "MicroSIP" abre en "Marcador", con Cuentas/Marcador/Llamadas visibles |
 | Cuentas | `cargo run --release` → pestaña "Cuentas" | Lista vacía o cuentas guardadas; botón «＋ Cuenta» |
 | Marcador numérico | `cargo run --release` → "Marcador" | Teclado 0-9, *, #, botón "Llamar" |
+| Regresión de navegación | `xvfb-run -a cargo test --features pjsip -- --ignored` | 1 passed: selector visible, apertura en Marcador y salto a Llamadas |
 | Bandeja del sistema | `cargo run --release` → cerrar ventana | Icono SNI; clic para mostrar, menú «Salir» |
 | Cuenta persistida | Guardar una cuenta y reiniciar | La cuenta reaparece en «Cuentas» (`~/.config/microsip-linux/accounts.conf`, 600) |
 | Registro SIP real | Cuenta apuntando a un PBX y `RUST_LOG=info` | Log PJSUA: `Adding account`, `Registration sent` y `TX ... REGISTER` |

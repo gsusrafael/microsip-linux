@@ -13,7 +13,7 @@ use gtk4::prelude::*;
 use gtk4::Box as GtkBox;
 use gtk4::{
     Align, Application, ApplicationWindow, Button, Entry, HeaderBar, Label, ListBox, ListBoxRow,
-    Orientation, Stack,
+    Orientation, Stack, StackSwitcher,
 };
 use std::cell::RefCell;
 use std::rc::Rc;
@@ -52,7 +52,7 @@ impl MainWindow {
         let accounts_page = accounts_page(&accounts_list, Rc::clone(&sip));
         stack.add_titled(&accounts_page, Some("cuentas"), "Cuentas");
 
-        let dialer_page = dialer_page(Rc::clone(&sip), status.clone());
+        let dialer_page = dialer_page(Rc::clone(&sip), status.clone(), stack.clone());
         stack.add_titled(&dialer_page, Some("marcador"), "Marcador");
 
         let calls_page = calls_page(&calls_list, Rc::clone(&sip));
@@ -61,6 +61,10 @@ impl MainWindow {
         let header = HeaderBar::new();
         header.set_title_widget(Some(&Label::new(Some("MicroSIP"))));
         header.pack_start(&status);
+
+        let switcher = StackSwitcher::new();
+        switcher.set_stack(Some(&stack));
+        switcher.set_halign(Align::Center);
 
         let account_btn = Button::with_label("＋ Cuenta");
         account_btn.add_css_class("suggested-action");
@@ -71,8 +75,12 @@ impl MainWindow {
         window.set_titlebar(Some(&header));
 
         let content = GtkBox::new(Orientation::Vertical, 0);
+        content.append(&switcher);
         content.append(&stack);
         window.set_child(Some(&content));
+
+        // El uso principal es llamar; las cuentas siguen a un clic.
+        stack.set_visible_child_name("marcador");
 
         let this = Self {
             app: app.clone(),
@@ -140,7 +148,15 @@ impl MainWindow {
                 self.refresh_accounts();
             }
             SipEvent::CallStateChanged { state, .. } => {
-                if *state == CallState::Early || *state == CallState::Incoming {
+                self.status.set_text(call_label(*state));
+                if matches!(
+                    *state,
+                    CallState::Outgoing
+                        | CallState::Incoming
+                        | CallState::Early
+                        | CallState::Connected
+                        | CallState::Disconnecting
+                ) {
                     self.show_page("llamadas");
                 }
                 self.refresh_calls();
@@ -339,12 +355,17 @@ fn accounts_page(list: &ListBox, sip: Rc<RefCell<Box<dyn SipBackend>>>) -> GtkBo
     box_
 }
 
-fn dialer_page(sip: Rc<RefCell<Box<dyn SipBackend>>>, status: Label) -> GtkBox {
+fn dialer_page(sip: Rc<RefCell<Box<dyn SipBackend>>>, status: Label, stack: Stack) -> GtkBox {
     let box_ = GtkBox::new(Orientation::Vertical, 12);
     box_.set_margin_top(24);
     box_.set_margin_start(24);
     box_.set_margin_end(24);
     box_.set_margin_bottom(24);
+
+    let title = Label::new(Some("Marcador"));
+    title.set_halign(Align::Start);
+    title.add_css_class("title-1");
+    box_.append(&title);
 
     let entry = Entry::new();
     entry.set_placeholder_text(Some("Número o URI SIP"));
@@ -401,6 +422,7 @@ fn dialer_page(sip: Rc<RefCell<Box<dyn SipBackend>>>, status: Label) -> GtkBox {
         };
         backend.send_command(SipCommand::Dial { account, to });
         status_clone.set_text("Llamada iniciada…");
+        stack.set_visible_child_name("llamadas");
     });
 
     box_.append(&grid);
@@ -629,5 +651,86 @@ fn call_label(state: CallState) -> &'static str {
         CallState::Disconnecting => "Colgando…",
         CallState::Disconnected => "Finalizada",
         CallState::Failed => "Fallida",
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::sip::MockBackend;
+
+    fn find_widget<T: gtk4::prelude::IsA<gtk4::Widget>>(root: &gtk4::Widget) -> Option<T> {
+        let mut next = root.first_child();
+        while let Some(widget) = next {
+            if let Some(found) = widget.downcast_ref::<T>() {
+                return Some(found.clone());
+            }
+            if let Some(found) = find_widget::<T>(&widget) {
+                return Some(found);
+            }
+            next = widget.next_sibling();
+        }
+        None
+    }
+
+    fn find_button(root: &gtk4::Widget, label: &str) -> Option<Button> {
+        let mut next = root.first_child();
+        while let Some(widget) = next {
+            if let Some(button) = widget.downcast_ref::<Button>() {
+                if button.label().as_deref() == Some(label) {
+                    return Some(button.clone());
+                }
+            }
+            if let Some(found) = find_button(&widget, label) {
+                return Some(found);
+            }
+            next = widget.next_sibling();
+        }
+        None
+    }
+
+    #[test]
+    #[ignore = "requiere display; ejecutar con xvfb-run"]
+    fn ui_exposes_navigation_and_dialer() {
+        gtk4::init().expect("no se pudo iniciar GTK4");
+        let app = Application::builder()
+            .application_id("org.microsip.linux.ui-test")
+            .build();
+        let cancellable = gtk4::gio::Cancellable::new();
+        app.register(Some(&cancellable)).unwrap();
+        let mut mock = MockBackend::new();
+        mock.init().unwrap();
+        mock.send_command(SipCommand::ConfigureAccount {
+            id: AccountId("1001@localhost".into()),
+            username: "1001".into(),
+            password: "test".into(),
+            domain: "localhost".into(),
+            display_name: String::new(),
+            proxy: String::new(),
+        });
+        let window = MainWindow::new(&app, Rc::new(RefCell::new(Box::new(mock))));
+        let root = window.window.upcast_ref::<gtk4::Widget>();
+
+        let switcher = find_widget::<StackSwitcher>(root).expect("falta el selector de páginas");
+        assert_eq!(
+            switcher
+                .stack()
+                .and_then(|stack| stack.visible_child_name())
+                .as_deref(),
+            Some("marcador"),
+            "la ventana debe abrir en el marcador"
+        );
+
+        let entry = find_widget::<Entry>(root).expect("falta el campo del marcador");
+        let call = find_button(root, "Llamar").expect("falta el botón Llamar");
+        entry.set_text("1002");
+        call.emit_clicked();
+
+        assert_eq!(
+            window.stack.visible_child_name().as_deref(),
+            Some("llamadas"),
+            "pulsar Llamar debe mostrar la llamada inmediatamente"
+        );
+        assert_eq!(window.sip.borrow().calls().len(), 1);
     }
 }

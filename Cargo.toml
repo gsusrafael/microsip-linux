@@ -1,6 +1,6 @@
 [package]
 name = "microsip-linux"
-version = "0.1.0"
+version = "0.1.1"
 edition = "2021"
 description = "MicroSIP port to Linux — Rust + GTK4 SIP softphone with system tray (PJSIP-based)"
 authors = ["Jesús Rafael Sánchez <jesusrafael@gmail.com>"]

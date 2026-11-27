@@ -52,7 +52,7 @@ jobs:
           sudo apt-get install -y --no-install-recommends \
             build-essential pkg-config curl ca-certificates \
             libgtk-4-dev libadwaita-1-dev libglib2.0-dev \
-            libasound2-dev libssl-dev dpkg-dev libclang-dev
+            libasound2-dev libssl-dev dpkg-dev libclang-dev xvfb
 
       - name: Dependencias de cross (armhf)
         if: matrix.cross_host != ''
@@ -103,6 +103,16 @@ jobs:
 
       - name: Instalar cargo-deb
         run: cargo install cargo-deb --locked
+
+      # La regresión de 0.1.0 fue publicar páginas sin un StackSwitcher:
+      # el registro funcionaba, pero el marcador quedaba inaccesible. Este
+      # test exige selector visible, apertura en Marcador y salto a Llamadas.
+      # Solo corre donde el binario target es ejecutable (no en el cross armhf).
+      - name: Prueba de regresión de la UI
+        if: matrix.cross_host == ''
+        run: |
+          cargo test --features pjsip
+          xvfb-run -a cargo test --features pjsip -- --ignored
 
       - name: Compilar y empaquetar .deb
         env:

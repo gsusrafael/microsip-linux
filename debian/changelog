@@ -1,3 +1,13 @@
+microsip-linux (0.1.1-1) unstable; urgency=medium
+
+  * Fix main window navigation: add a visible StackSwitcher for Cuentas,
+    Marcador and Llamadas, and open on the dialer by default.
+  * Switch to the active call immediately when dialing and for outgoing,
+    early, connected and disconnecting call states.
+  * Add a GTK UI regression test and run it in native release jobs.
+
+ -- Jesús Rafael Sánchez <jesusrafael@gmail.com>  Fri, 27 Nov 2026 15:20:00 +0000
+
 microsip-linux (0.1.0-1) unstable; urgency=medium
 
   * Initial release: MicroSIP port to Linux.
